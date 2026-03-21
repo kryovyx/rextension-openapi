@@ -17,6 +17,25 @@ import (
 	"github.com/kryovyx/rex/route"
 )
 
+// extractPathParams parses an OpenAPI-style path (e.g. "/users/{id}/posts/{postID}")
+// and returns a slice of Parameter objects for every {param} segment.
+// The path is already in OpenAPI format so it is returned unchanged.
+func extractPathParams(path string) (openAPIPath string, params []*Parameter) {
+	parts := strings.Split(path, "/")
+	for _, p := range parts {
+		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") {
+			name := p[1 : len(p)-1]
+			params = append(params, &Parameter{
+				Name:     name,
+				In:       "path",
+				Required: true,
+				Schema:   &SchemaObject{Type: "string"},
+			})
+		}
+	}
+	return path, params
+}
+
 // Generator assembles an OpenAPI 3.1 Document from a set of routes.
 type Generator struct {
 	config          Config
@@ -106,17 +125,22 @@ func (g *Generator) Generate(routes []route.Route) (*Document, error) {
 		// Enrich with security requirements.
 		g.enrichWithSecurity(rt, op)
 
+		// Extract path parameters and rewrite path to OpenAPI {param} syntax.
+		openAPIPath, pathParams := extractPathParams(rt.Path())
+		if len(pathParams) > 0 {
+			op.Parameters = append(op.Parameters, pathParams...)
+		}
+
 		// Ensure at least a default response.
 		if len(op.Responses) == 0 {
 			op.Responses["200"] = &Response{Description: "Successful response"}
 		}
 
 		// Add operation to path item.
-		path := rt.Path()
-		if doc.Paths[path] == nil {
-			doc.Paths[path] = &PathItem{}
+		if doc.Paths[openAPIPath] == nil {
+			doc.Paths[openAPIPath] = &PathItem{}
 		}
-		doc.Paths[path].setOperation(strings.ToUpper(rt.Method()), op)
+		doc.Paths[openAPIPath].setOperation(strings.ToUpper(rt.Method()), op)
 	}
 
 	// Copy component schemas from the generator.

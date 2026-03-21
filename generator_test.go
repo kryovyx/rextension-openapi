@@ -720,3 +720,105 @@ func TestGenerator_Generate_WithResponseEmptyBodySchema(t *testing.T) {
 		t.Errorf("expected type 'object' for empty types, got %q", mt.Schema.Type)
 	}
 }
+
+func TestGenerator_PathParams_SingleParam(t *testing.T) {
+	// SingleParam ensures a `{id}` segment is recognised and a required
+	// path parameter is emitted with schema type "string".
+	cfg := openapi.Config{Title: "T", Version: "1"}
+	gen := openapi.NewGenerator(cfg, nil)
+
+	routes := []route.Route{
+		&mockRoute{method: "GET", path: "/users/{id}", operationID: "getUser"},
+	}
+
+	doc, err := gen.Generate(routes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	pi, ok := doc.Paths["/users/{id}"]
+	if !ok {
+		t.Fatal("expected /users/{id} path in document")
+	}
+	op := pi.Get
+	if op == nil {
+		t.Fatal("expected GET operation")
+	}
+	if len(op.Parameters) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(op.Parameters))
+	}
+	p := op.Parameters[0]
+	if p.Name != "id" {
+		t.Errorf("expected parameter name 'id', got %q", p.Name)
+	}
+	if p.In != "path" {
+		t.Errorf("expected parameter in 'path', got %q", p.In)
+	}
+	if !p.Required {
+		t.Error("path parameter should be required")
+	}
+	if p.Schema == nil || p.Schema.Type != "string" {
+		t.Error("path parameter schema should be string")
+	}
+}
+
+func TestGenerator_PathParams_MultipleParams(t *testing.T) {
+	// MultipleParams ensures that all {param} segments in a path are captured.
+	cfg := openapi.Config{Title: "T", Version: "1"}
+	gen := openapi.NewGenerator(cfg, nil)
+
+	routes := []route.Route{
+		&mockRoute{method: "GET", path: "/users/{userID}/posts/{postID}", operationID: "getPost"},
+	}
+
+	doc, err := gen.Generate(routes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	pi, ok := doc.Paths["/users/{userID}/posts/{postID}"]
+	if !ok {
+		t.Fatal("expected /users/{userID}/posts/{postID} path in document")
+	}
+	op := pi.Get
+	if op == nil {
+		t.Fatal("expected GET operation")
+	}
+	if len(op.Parameters) != 2 {
+		t.Fatalf("expected 2 parameters, got %d", len(op.Parameters))
+	}
+	names := map[string]bool{}
+	for _, p := range op.Parameters {
+		names[p.Name] = true
+	}
+	if !names["userID"] || !names["postID"] {
+		t.Errorf("expected parameters 'userID' and 'postID', got %v", names)
+	}
+}
+
+func TestGenerator_PathParams_NoParams(t *testing.T) {
+	// NoParams ensures a plain path without {params} produces no path parameters.
+	cfg := openapi.Config{Title: "T", Version: "1"}
+	gen := openapi.NewGenerator(cfg, nil)
+
+	routes := []route.Route{
+		&mockRoute{method: "GET", path: "/health", operationID: "health"},
+	}
+
+	doc, err := gen.Generate(routes)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	pi, ok := doc.Paths["/health"]
+	if !ok {
+		t.Fatal("expected /health path in document")
+	}
+	op := pi.Get
+	if op == nil {
+		t.Fatal("expected GET operation")
+	}
+	if len(op.Parameters) != 0 {
+		t.Errorf("expected no parameters, got %d", len(op.Parameters))
+	}
+}

@@ -69,12 +69,22 @@ func (pi *PathItem) setOperation(method string, op *Operation) {
 	}
 }
 
+// Parameter describes a single operation parameter (path, query, header, or cookie).
+type Parameter struct {
+	Name        string        `json:"name"`
+	In          string        `json:"in"`
+	Description string        `json:"description,omitempty"`
+	Required    bool          `json:"required"`
+	Schema      *SchemaObject `json:"schema,omitempty"`
+}
+
 // Operation describes a single API operation on a path.
 type Operation struct {
 	OperationID string                `json:"operationId,omitempty"`
 	Summary     string                `json:"summary,omitempty"`
 	Description string                `json:"description,omitempty"`
 	Tags        []string              `json:"tags,omitempty"`
+	Parameters  []*Parameter          `json:"parameters,omitempty"`
 	RequestBody *RequestBody          `json:"requestBody,omitempty"`
 	Responses   map[string]*Response  `json:"responses,omitempty"`
 	Security    []SecurityRequirement `json:"security,omitempty"`
