@@ -108,3 +108,71 @@ func TestNewConfig_OptionOverridesOption(t *testing.T) {
 		t.Errorf("expected last option to win, got Title %q", cfg.Title)
 	}
 }
+
+func TestWithTags_SingleTag(t *testing.T) {
+	cfg := openapi.NewConfig(
+		openapi.WithTags(openapi.Tag{Name: "users", Description: "User management operations"}),
+	)
+
+	if len(cfg.Tags) != 1 {
+		t.Fatalf("expected 1 tag, got %d", len(cfg.Tags))
+	}
+	if cfg.Tags[0].Name != "users" {
+		t.Errorf("expected tag Name %q, got %q", "users", cfg.Tags[0].Name)
+	}
+	if cfg.Tags[0].Description != "User management operations" {
+		t.Errorf("expected tag Description %q, got %q", "User management operations", cfg.Tags[0].Description)
+	}
+}
+
+func TestWithTags_MultipleTags(t *testing.T) {
+	cfg := openapi.NewConfig(
+		openapi.WithTags(
+			openapi.Tag{Name: "users", Description: "User operations"},
+			openapi.Tag{Name: "products", Description: "Product operations"},
+		),
+	)
+
+	if len(cfg.Tags) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(cfg.Tags))
+	}
+	if cfg.Tags[0].Name != "users" {
+		t.Errorf("expected first tag %q, got %q", "users", cfg.Tags[0].Name)
+	}
+	if cfg.Tags[1].Name != "products" {
+		t.Errorf("expected second tag %q, got %q", "products", cfg.Tags[1].Name)
+	}
+}
+
+func TestWithTags_AccumulatesAcrossCalls(t *testing.T) {
+	cfg := openapi.NewConfig(
+		openapi.WithTags(openapi.Tag{Name: "a", Description: "Tag A"}),
+		openapi.WithTags(openapi.Tag{Name: "b", Description: "Tag B"}),
+	)
+
+	if len(cfg.Tags) != 2 {
+		t.Fatalf("expected 2 tags after two calls, got %d", len(cfg.Tags))
+	}
+}
+
+func TestWithTags_WithExternalDocs(t *testing.T) {
+	ext := &openapi.ExternalDocs{URL: "https://example.com/docs", Description: "More info"}
+	cfg := openapi.NewConfig(
+		openapi.WithTags(openapi.Tag{Name: "auth", Description: "Auth operations", ExternalDocs: ext}),
+	)
+
+	if cfg.Tags[0].ExternalDocs == nil {
+		t.Fatal("expected ExternalDocs to be set")
+	}
+	if cfg.Tags[0].ExternalDocs.URL != "https://example.com/docs" {
+		t.Errorf("expected ExternalDocs.URL %q, got %q", "https://example.com/docs", cfg.Tags[0].ExternalDocs.URL)
+	}
+}
+
+func TestWithTags_NoTags_DefaultsToNil(t *testing.T) {
+	cfg := openapi.NewConfig()
+
+	if len(cfg.Tags) != 0 {
+		t.Errorf("expected no tags by default, got %d", len(cfg.Tags))
+	}
+}

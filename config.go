@@ -17,6 +17,8 @@ type Config struct {
 	Description string
 	// ServePath is the path to serve the OpenAPI JSON document. Default: "/openapi.json".
 	ServePath string
+	// Tags defines top-level tag descriptions for the document.
+	Tags []Tag
 }
 
 // NewDefaultConfig returns the default configuration.
@@ -56,6 +58,15 @@ func WithDescription(desc string) ConfigOption {
 func WithServePath(path string) ConfigOption {
 	return func(cfg *Config) {
 		cfg.ServePath = path
+	}
+}
+
+// WithTags registers top-level tag definitions that describe the tags
+// used by route operations. Tags are merged with any previously registered
+// tags; duplicate names are overwritten by the last entry.
+func WithTags(tags ...Tag) ConfigOption {
+	return func(cfg *Config) {
+		cfg.Tags = append(cfg.Tags, tags...)
 	}
 }
 

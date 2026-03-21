@@ -650,6 +650,50 @@ func TestGenerator_Generate_NoRoutes(t *testing.T) {
 	}
 }
 
+func TestGenerator_Generate_WithTagsInConfig(t *testing.T) {
+	cfg := openapi.Config{
+		Title:   "Tagged API",
+		Version: "1",
+		Tags: []openapi.Tag{
+			{Name: "users", Description: "User management"},
+			{Name: "products", Description: "Product catalog"},
+		},
+	}
+	gen := openapi.NewGenerator(cfg, nil)
+
+	doc, err := gen.Generate(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(doc.Tags) != 2 {
+		t.Fatalf("expected 2 tags in document, got %d", len(doc.Tags))
+	}
+	if doc.Tags[0].Name != "users" {
+		t.Errorf("expected first tag %q, got %q", "users", doc.Tags[0].Name)
+	}
+	if doc.Tags[0].Description != "User management" {
+		t.Errorf("expected first tag description %q, got %q", "User management", doc.Tags[0].Description)
+	}
+	if doc.Tags[1].Name != "products" {
+		t.Errorf("expected second tag %q, got %q", "products", doc.Tags[1].Name)
+	}
+}
+
+func TestGenerator_Generate_NoTags_DocumentTagsNil(t *testing.T) {
+	cfg := openapi.Config{Title: "T", Version: "1"}
+	gen := openapi.NewGenerator(cfg, nil)
+
+	doc, err := gen.Generate(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(doc.Tags) != 0 {
+		t.Errorf("expected no tags when none configured, got %d", len(doc.Tags))
+	}
+}
+
 func TestGenerator_Generate_WithResponseEmptyBodySchema(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)

@@ -57,6 +57,9 @@ func NewOpenAPIExtension(cfg *Config) rx.Extension {
 		if cfg.ServePath != "" {
 			c.ServePath = cfg.ServePath
 		}
+		if len(cfg.Tags) > 0 {
+			c.Tags = cfg.Tags
+		}
 	}
 	return &OpenAPIExtension{cfg: *c}
 }

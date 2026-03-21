@@ -43,6 +43,7 @@ func (g *Generator) Generate(routes []route.Route) (*Document, error) {
 			Version:     g.config.Version,
 			Description: g.config.Description,
 		},
+		Tags:  g.config.Tags,
 		Paths: make(map[string]*PathItem),
 		Components: &Components{
 			Schemas:         make(map[string]*SchemaObject),

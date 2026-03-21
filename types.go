@@ -9,10 +9,24 @@
 // that conforms to the OpenAPI 3.1 specification.
 package openapi
 
+// Tag adds metadata to a single tag used by operations.
+type Tag struct {
+	Name         string        `json:"name"`
+	Description  string        `json:"description,omitempty"`
+	ExternalDocs *ExternalDocs `json:"externalDocs,omitempty"`
+}
+
+// ExternalDocs points to additional external documentation.
+type ExternalDocs struct {
+	Description string `json:"description,omitempty"`
+	URL         string `json:"url"`
+}
+
 // Document represents a complete OpenAPI 3.1 document.
 type Document struct {
 	OpenAPI    string               `json:"openapi"`
 	Info       Info                 `json:"info"`
+	Tags       []Tag                `json:"tags,omitempty"`
 	Paths      map[string]*PathItem `json:"paths,omitempty"`
 	Components *Components          `json:"components,omitempty"`
 }
