@@ -14,7 +14,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/kryovyx/rex/route"
+	rxevent "github.com/kryovyx/rextension/event"
 )
 
 // extractPathParams parses an OpenAPI-style path (e.g. "/users/{id}/posts/{postID}")
@@ -54,7 +54,7 @@ func NewGenerator(cfg Config, securitySchemes []SecuritySchemeAccessor) *Generat
 
 // Generate builds the full OpenAPI 3.1 document from the given routes.
 // Only routes implementing OpenAPIRoute are included.
-func (g *Generator) Generate(routes []route.Route) (*Document, error) {
+func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 	doc := &Document{
 		OpenAPI: "3.1.0",
 		Info: Info{
@@ -168,7 +168,7 @@ func (g *Generator) Generate(routes []route.Route) (*Document, error) {
 // enrichWithValidation uses reflection to call RequestBody() and Responses()
 // on the route. This works with any type implementing those methods (e.g.,
 // validation.ValidatableRoute) without importing the validation package.
-func (g *Generator) enrichWithValidation(rt route.Route, op *Operation) {
+func (g *Generator) enrichWithValidation(rt rxevent.Route, op *Operation) {
 	rv := reflect.ValueOf(rt)
 
 	// Try RequestBody() → returns some BodySchema-like interface.
@@ -304,7 +304,7 @@ func (g *Generator) extractBodySchema(v interface{}) *SchemaObject {
 
 // enrichWithSecurity checks if the route also implements SecuredRouteAccessor
 // and adds security requirements to the operation.
-func (g *Generator) enrichWithSecurity(rt route.Route, op *Operation) {
+func (g *Generator) enrichWithSecurity(rt rxevent.Route, op *Operation) {
 	sr, ok := rt.(SecuredRouteAccessor)
 	if !ok {
 		return

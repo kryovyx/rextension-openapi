@@ -19,9 +19,8 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/kryovyx/rex/event"
-	"github.com/kryovyx/rex/route"
 	rx "github.com/kryovyx/rextension"
+	rxevent "github.com/kryovyx/rextension/event"
 )
 
 // OpenAPIExtension implements the Rex extension contract for OpenAPI generation.
@@ -31,7 +30,7 @@ type OpenAPIExtension struct {
 	rex    rx.Rex // Store reference to Rex for lazy generation
 
 	mu     sync.Mutex
-	routes []route.Route
+	routes []rxevent.Route
 
 	// securitySchemes are discovered from DI at generation time.
 	securitySchemes []SecuritySchemeAccessor
@@ -76,8 +75,8 @@ func (e *OpenAPIExtension) OnInitialize(ctx context.Context, r rx.Rex) error {
 	e.logger = r.Logger()
 
 	// Subscribe to route registration events.
-	r.EventBus().Subscribe(event.RouterRouteRegisteredEventType, func(ev event.Event) {
-		if routeEv, ok := event.As[event.RouterRouteRegisteredEvent](ev); ok {
+	r.EventBus().Subscribe(rxevent.EventTypeRouterRouteRegistered, func(ev rxevent.Event) {
+			if routeEv, ok := rxevent.As[rxevent.RouterRouteRegisteredEvent](ev); ok {
 			e.logger.Debug("OpenAPI: Route registered: %s %s", routeEv.Route.Method(), routeEv.Route.Path())
 			// Only collect routes that implement OpenAPIRoute.
 			if oar, isOA := routeEv.Route.(OpenAPIRoute); isOA {
@@ -131,10 +130,10 @@ func (e *OpenAPIExtension) ensureGenerated() ([]byte, error) {
 	}
 	e.mu.Unlock()
 
-	routes := func() []route.Route {
+	routes := func() []rxevent.Route {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		dst := make([]route.Route, len(e.routes))
+		dst := make([]rxevent.Route, len(e.routes))
 		copy(dst, e.routes)
 		return dst
 	}()

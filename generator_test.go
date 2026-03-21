@@ -3,7 +3,7 @@ package openapi_test
 import (
 	"testing"
 
-	"github.com/kryovyx/rex/route"
+	rxevent "github.com/kryovyx/rextension/event"
 	openapi "github.com/kryovyx/rextension-openapi"
 )
 
@@ -21,7 +21,6 @@ type mockRoute struct {
 
 func (r *mockRoute) Method() string             { return r.method }
 func (r *mockRoute) Path() string               { return r.path }
-func (r *mockRoute) Handler() route.HandlerFunc { return func(ctx route.Context) {} }
 func (r *mockRoute) OperationID() string        { return r.operationID }
 func (r *mockRoute) Summary() string            { return r.summary }
 func (r *mockRoute) Description() string        { return r.description }
@@ -74,7 +73,6 @@ type plainRoute struct {
 
 func (r *plainRoute) Method() string             { return r.method }
 func (r *plainRoute) Path() string               { return r.path }
-func (r *plainRoute) Handler() route.HandlerFunc { return func(ctx route.Context) {} }
 
 // BodySchema mocks for validation enrichment
 type testBodySchema struct {
@@ -124,7 +122,7 @@ func TestGenerator_Generate_BasicRoute(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{
 			method:      "GET",
 			path:        "/users",
@@ -169,7 +167,7 @@ func TestGenerator_Generate_SkipsNonOpenAPIRoute(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&plainRoute{method: "GET", path: "/health"},
 	}
 
@@ -187,7 +185,7 @@ func TestGenerator_Generate_DefaultResponse(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "GET", path: "/test", operationID: "test"},
 	}
 
@@ -207,7 +205,7 @@ func TestGenerator_Generate_AllHTTPMethods(t *testing.T) {
 	gen := openapi.NewGenerator(cfg, nil)
 
 	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-	routes := make([]route.Route, len(methods))
+	routes := make([]rxevent.Route, len(methods))
 	for i, m := range methods {
 		routes[i] = &mockRoute{method: m, path: "/test", operationID: m + "Op"}
 	}
@@ -242,7 +240,7 @@ func TestGenerator_Generate_MultiplePaths(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "GET", path: "/a", operationID: "getA"},
 		&mockRoute{method: "POST", path: "/b", operationID: "postB"},
 	}
@@ -348,7 +346,7 @@ func TestGenerator_Generate_RouteWithSecurity(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, schemes)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockSecuredRoute{
 			mockRoute: mockRoute{method: "GET", path: "/secure", operationID: "secureOp"},
 			schemes:   []string{"bearer"},
@@ -370,7 +368,7 @@ func TestGenerator_Generate_RouteWithEmptySchemes(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockSecuredRoute{
 			mockRoute: mockRoute{method: "GET", path: "/public", operationID: "publicOp"},
 			schemes:   nil,
@@ -400,7 +398,7 @@ func TestGenerator_Generate_WithValidation(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockValidatedRoute{
 			mockRoute: mockRoute{method: "POST", path: "/users", operationID: "createUser"},
 			reqBody:   &testBodySchema{kind: 0, types: []interface{}{ReqBody{}}},
@@ -435,7 +433,7 @@ func TestGenerator_Generate_NilRequestBody(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockValidatedRoute{
 			mockRoute: mockRoute{method: "GET", path: "/items", operationID: "listItems"},
 			reqBody:   nil,
@@ -457,7 +455,7 @@ func TestGenerator_Generate_WithExamples(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRouteWithExamples{
 			mockValidatedRoute: mockValidatedRoute{
 				mockRoute: mockRoute{method: "POST", path: "/pay", operationID: "pay"},
@@ -522,7 +520,7 @@ func TestGenerator_Generate_EmptyComponents(t *testing.T) {
 	gen := openapi.NewGenerator(cfg, nil)
 
 	// Route with no validation, no security - components should be nil
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "GET", path: "/test", operationID: "test"},
 	}
 
@@ -537,7 +535,7 @@ func TestGenerator_Generate_OnlySchemasNoSecurity(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockValidatedRoute{
 			mockRoute: mockRoute{method: "POST", path: "/users", operationID: "createUser"},
 			reqBody:   &testBodySchema{kind: 0, types: []interface{}{ReqBody{}}},
@@ -564,7 +562,7 @@ func TestGenerator_Generate_OnlySecurityNoSchemas(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, schemes)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "GET", path: "/test", operationID: "test"},
 	}
 
@@ -601,7 +599,7 @@ func TestGenerator_Generate_LowercaseMethod(t *testing.T) {
 	gen := openapi.NewGenerator(cfg, nil)
 
 	// The generator calls strings.ToUpper on the method, so lowercase input should work
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "get", path: "/test", operationID: "test"},
 	}
 
@@ -621,7 +619,7 @@ func TestGenerator_Generate_MultipleSecuritySchemes(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, schemes)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockSecuredRoute{
 			mockRoute: mockRoute{method: "GET", path: "/secure", operationID: "secureOp"},
 			schemes:   []string{"bearer", "basic"},
@@ -698,7 +696,7 @@ func TestGenerator_Generate_WithResponseEmptyBodySchema(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockValidatedRoute{
 			mockRoute: mockRoute{method: "POST", path: "/items", operationID: "createItem"},
 			reqBody:   &testBodySchema{kind: 0, types: []interface{}{}}, // empty types
@@ -727,7 +725,7 @@ func TestGenerator_PathParams_SingleParam(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "GET", path: "/users/{id}", operationID: "getUser"},
 	}
 
@@ -767,7 +765,7 @@ func TestGenerator_PathParams_MultipleParams(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "GET", path: "/users/{userID}/posts/{postID}", operationID: "getPost"},
 	}
 
@@ -801,7 +799,7 @@ func TestGenerator_PathParams_NoParams(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []route.Route{
+	routes := []rxevent.Route{
 		&mockRoute{method: "GET", path: "/health", operationID: "health"},
 	}
 
