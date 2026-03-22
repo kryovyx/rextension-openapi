@@ -11,20 +11,20 @@ package openapi
 import (
 	"net/http"
 
-	"github.com/kryovyx/rex/route"
+	rxroute "github.com/kryovyx/rextension/route"
 )
 
 // newSpecRoute creates a route that serves the OpenAPI JSON document.
-func newSpecRoute(path string, docBytes []byte) route.Route {
-	return route.New("GET", path, func(ctx route.Context) {
+func newSpecRoute(path string, docBytes []byte) rxroute.Route {
+	return rxroute.New("GET", path, func(ctx rxroute.Context) {
 		ctx.Respond(http.StatusOK, "application/json", docBytes)
 	})
 }
 
 // newSpecRouteWithGenerator creates a route that lazily generates and serves the OpenAPI JSON document.
 // The document is generated on first request to ensure all routes are collected.
-func newSpecRouteWithGenerator(path string, ext *OpenAPIExtension) route.Route {
-	return route.New("GET", path, func(ctx route.Context) {
+func newSpecRouteWithGenerator(path string, ext *OpenAPIExtension) rxroute.Route {
+	return rxroute.New("GET", path, func(ctx rxroute.Context) {
 		ext.logger.Debug("OpenAPI: Spec route handler called, generating document on demand")
 		docBytes, err := ext.ensureGenerated()
 		if err != nil {
