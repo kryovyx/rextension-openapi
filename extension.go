@@ -76,7 +76,7 @@ func (e *OpenAPIExtension) OnInitialize(ctx context.Context, r rx.Rex) error {
 
 	// Subscribe to route registration events.
 	r.EventBus().Subscribe(rxevent.EventTypeRouterRouteRegistered, func(ev rxevent.Event) {
-			if routeEv, ok := rxevent.As[rxevent.RouterRouteRegisteredEvent](ev); ok {
+		if routeEv, ok := rxevent.As[rxevent.RouterRouteRegisteredEvent](ev); ok {
 			e.logger.Debug("OpenAPI: Route registered: %s %s", routeEv.Route.Method(), routeEv.Route.Path())
 			// Only collect routes that implement OpenAPIRoute.
 			if oar, isOA := routeEv.Route.(OpenAPIRoute); isOA {
