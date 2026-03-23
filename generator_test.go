@@ -3,8 +3,8 @@ package openapi_test
 import (
 	"testing"
 
-	rxevent "github.com/kryovyx/rextension/event"
 	openapi "github.com/kryovyx/rextension-openapi"
+	rxevent "github.com/kryovyx/rextension/event"
 )
 
 // ---- mock types ----
@@ -19,12 +19,12 @@ type mockRoute struct {
 	tags        []string
 }
 
-func (r *mockRoute) Method() string             { return r.method }
-func (r *mockRoute) Path() string               { return r.path }
-func (r *mockRoute) OperationID() string        { return r.operationID }
-func (r *mockRoute) Summary() string            { return r.summary }
-func (r *mockRoute) Description() string        { return r.description }
-func (r *mockRoute) Tags() []string             { return r.tags }
+func (r *mockRoute) Method() string      { return r.method }
+func (r *mockRoute) Path() string        { return r.path }
+func (r *mockRoute) OperationID() string { return r.operationID }
+func (r *mockRoute) Summary() string     { return r.summary }
+func (r *mockRoute) Description() string { return r.description }
+func (r *mockRoute) Tags() []string      { return r.tags }
 
 // mockSecuredRoute implements route.Route + OpenAPIRoute + SecuredRouteAccessor
 type mockSecuredRoute struct {
@@ -71,8 +71,8 @@ type plainRoute struct {
 	path   string
 }
 
-func (r *plainRoute) Method() string             { return r.method }
-func (r *plainRoute) Path() string               { return r.path }
+func (r *plainRoute) Method() string { return r.method }
+func (r *plainRoute) Path() string   { return r.path }
 
 // BodySchema mocks for validation enrichment
 type testBodySchema struct {
@@ -336,6 +336,38 @@ func TestGenerator_Generate_SecuritySchemeAPIKey(t *testing.T) {
 	}
 	if ss.In != "header" {
 		t.Errorf("expected in 'header', got %q", ss.In)
+	}
+}
+
+func TestGenerator_Generate_SecuritySchemeAPIKeyCookie(t *testing.T) {
+	cfg := openapi.Config{Title: "T", Version: "1"}
+	schemes := []openapi.SecuritySchemeAccessor{
+		&mockAPIKeyScheme{
+			mockSecurityScheme: mockSecurityScheme{
+				name:        "sessionCookie",
+				typ:         "apiKey",
+				description: "BFF session cookie",
+			},
+			paramName: "session_id",
+			location:  "cookie",
+		},
+	}
+	gen := openapi.NewGenerator(cfg, schemes)
+
+	doc, _ := gen.Generate(nil)
+
+	ss, ok := doc.Components.SecuritySchemes["sessionCookie"]
+	if !ok {
+		t.Fatal("expected 'sessionCookie' in SecuritySchemes")
+	}
+	if ss.Type != "apiKey" {
+		t.Errorf("expected type 'apiKey', got %q", ss.Type)
+	}
+	if ss.In != "cookie" {
+		t.Errorf("expected in 'cookie', got %q", ss.In)
+	}
+	if ss.Name != "session_id" {
+		t.Errorf("expected name 'session_id', got %q", ss.Name)
 	}
 }
 
