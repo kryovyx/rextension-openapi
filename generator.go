@@ -91,12 +91,15 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 			}
 		case "apiKey":
 			// Extract name and in from the scheme if it exposes them.
-			if ak, ok := ss.(interface {
-				ParamName() string
-				Location() string
-			}); ok {
+			// ParamName() must return string; Location() may return a named
+			// string type (e.g. APIKeyLocation) so we use reflection for it.
+			if ak, ok := ss.(interface{ ParamName() string }); ok {
 				sso.Name = ak.ParamName()
-				sso.In = ak.Location()
+			}
+			if lv := reflect.ValueOf(ss).MethodByName("Location"); lv.IsValid() {
+				if res := lv.Call(nil); len(res) == 1 {
+					sso.In = fmt.Sprintf("%s", res[0].Interface())
+				}
 			}
 		}
 		doc.Components.SecuritySchemes[ss.Name()] = sso
