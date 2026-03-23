@@ -113,7 +113,6 @@ type ExampleObject struct {
 // MediaType describes a media type with a schema and optional examples.
 type MediaType struct {
 	Schema   *SchemaObject             `json:"schema"`
-	Example  interface{}               `json:"example,omitempty"`
 	Examples map[string]*ExampleObject `json:"examples,omitempty"`
 }
 
@@ -154,5 +153,5 @@ type SchemaObject struct {
 	AnyOf       []*SchemaObject          `json:"anyOf,omitempty"`
 	AllOf       []*SchemaObject          `json:"allOf,omitempty"`
 	Nullable    bool                     `json:"nullable,omitempty"`
-	Example     interface{}              `json:"example,omitempty"`
+	Examples    []interface{}            `json:"examples,omitempty"`
 }

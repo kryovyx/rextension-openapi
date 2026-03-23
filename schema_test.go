@@ -400,8 +400,8 @@ func TestGenerate_ExampleTag(t *testing.T) {
 
 	schema := g.Components()["AnnotatedStruct"]
 	idProp := schema.Properties["id"]
-	if idProp.Example != "abc-123" {
-		t.Errorf("expected example 'abc-123', got %v", idProp.Example)
+	if len(idProp.Examples) == 0 || idProp.Examples[0] != "abc-123" {
+		t.Errorf("expected examples[0] 'abc-123', got %v", idProp.Examples)
 	}
 }
 

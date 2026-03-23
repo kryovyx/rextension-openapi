@@ -176,8 +176,10 @@ func (g *SchemaGenerator) buildStructSchema(t reflect.Type) *SchemaObject {
 			propSchema.Description = desc
 		}
 		// Apply example struct tag.
+		// OpenAPI 3.1 uses the JSON Schema 2020-12 'examples' array instead of
+		// the deprecated scalar 'example' keyword.
 		if ex := field.Tag.Get("example"); ex != "" {
-			propSchema.Example = ex
+			propSchema.Examples = []interface{}{ex}
 		}
 		// Apply format override struct tag.
 		if fmtTag := field.Tag.Get("format"); fmtTag != "" {
