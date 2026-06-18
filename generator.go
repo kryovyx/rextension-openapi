@@ -102,6 +102,11 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 				}
 			}
 		}
+		if rcp, ok := ss.(RoleClaimProvider); ok {
+			if claim := rcp.RolesClaim(); claim != "" {
+				sso.XRolesClaim = claim
+			}
+		}
 		doc.Components.SecuritySchemes[ss.Name()] = sso
 	}
 
@@ -307,6 +312,10 @@ func (g *Generator) extractBodySchema(v interface{}) *SchemaObject {
 
 // enrichWithSecurity checks if the route also implements SecuredRouteAccessor
 // and adds security requirements to the operation.
+// If the route also implements ScopedSecuredRouteAccessor the declared scopes
+// are included in each security requirement entry instead of an empty slice.
+// If the route implements RoleGuardedRouteAccessor the declared roles are
+// emitted as x-required-roles on the operation (keyed by scheme name).
 func (g *Generator) enrichWithSecurity(rt rxevent.Route, op *Operation) {
 	sr, ok := rt.(SecuredRouteAccessor)
 	if !ok {
@@ -318,9 +327,24 @@ func (g *Generator) enrichWithSecurity(rt rxevent.Route, op *Operation) {
 		return
 	}
 
+	var scopeMap map[string][]string
+	if ss, ok := rt.(ScopedSecuredRouteAccessor); ok {
+		scopeMap = ss.RequiredScopes()
+	}
+
 	for _, schemeName := range schemes {
-		op.Security = append(op.Security, SecurityRequirement{
-			schemeName: {},
-		})
+		scopes := []string{}
+		if scopeMap != nil {
+			if s, ok := scopeMap[schemeName]; ok {
+				scopes = s
+			}
+		}
+		op.Security = append(op.Security, SecurityRequirement{schemeName: scopes})
+	}
+
+	if rg, ok := rt.(RoleGuardedRouteAccessor); ok {
+		if roleMap := rg.RequiredRoles(); len(roleMap) > 0 {
+			op.XRequiredRoles = roleMap
+		}
 	}
 }

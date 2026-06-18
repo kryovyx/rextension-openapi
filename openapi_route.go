@@ -52,6 +52,35 @@ type BodySchemaAccessor interface {
 // auto-populates security requirements.
 type SecuredRouteAccessor = rx.SecuredRouteAccessor
 
+// ScopedSecuredRouteAccessor is an optional extension of SecuredRouteAccessor.
+// Routes implementing this declare OAuth2/OIDC scopes required per scheme.
+// The generator uses the returned map to populate the scopes list in each
+// OpenAPI security requirement entry (instead of emitting an empty slice).
+//
+// The map key must match a scheme name returned by RequiredSchemes.
+type ScopedSecuredRouteAccessor interface {
+	RequiredScopes() map[string][]string
+}
+
+// RoleGuardedRouteAccessor is an optional extension of SecuredRouteAccessor.
+// Routes implementing this declare roles required per scheme.
+// The generator uses the returned map to populate the x-required-roles extension
+// on the OpenAPI operation (one entry per scheme → list of required roles).
+//
+// The map key must match a scheme name returned by RequiredSchemes.
+type RoleGuardedRouteAccessor interface {
+	RequiredRoles() map[string][]string
+}
+
+// RoleClaimProvider is an optional interface a SecurityScheme may implement to
+// expose which token claim carries the role/permission values. When implemented,
+// the generator emits x-roles-claim on the security scheme object in the
+// components section, enabling UI tooling (e.g. the Swagger UI plugin) to
+// surface the claim name alongside the required-roles badges.
+type RoleClaimProvider interface {
+	RolesClaim() string
+}
+
 // SecuritySchemeAccessor mirrors security.SecurityScheme for doc generation.
 type SecuritySchemeAccessor = rx.SecuritySchemeAccessor
 

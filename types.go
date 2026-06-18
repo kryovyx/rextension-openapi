@@ -80,14 +80,15 @@ type Parameter struct {
 
 // Operation describes a single API operation on a path.
 type Operation struct {
-	OperationID string                `json:"operationId,omitempty"`
-	Summary     string                `json:"summary,omitempty"`
-	Description string                `json:"description,omitempty"`
-	Tags        []string              `json:"tags,omitempty"`
-	Parameters  []*Parameter          `json:"parameters,omitempty"`
-	RequestBody *RequestBody          `json:"requestBody,omitempty"`
-	Responses   map[string]*Response  `json:"responses,omitempty"`
-	Security    []SecurityRequirement `json:"security,omitempty"`
+	OperationID    string                `json:"operationId,omitempty"`
+	Summary        string                `json:"summary,omitempty"`
+	Description    string                `json:"description,omitempty"`
+	Tags           []string              `json:"tags,omitempty"`
+	Parameters     []*Parameter          `json:"parameters,omitempty"`
+	RequestBody    *RequestBody          `json:"requestBody,omitempty"`
+	Responses      map[string]*Response  `json:"responses,omitempty"`
+	Security       []SecurityRequirement `json:"security,omitempty"`
+	XRequiredRoles map[string][]string   `json:"x-required-roles,omitempty"`
 }
 
 // RequestBody describes the request body for an operation.
@@ -133,6 +134,10 @@ type SecuritySchemeObject struct {
 	BearerFormat string `json:"bearerFormat,omitempty"`
 	Name         string `json:"name,omitempty"`
 	In           string `json:"in,omitempty"`
+	// XRolesClaim is a vendor extension that documents which token claim carries
+	// the role/permission values (e.g. "permissions", "realm_access.roles").
+	// Populated when the scheme implements RoleClaimProvider.
+	XRolesClaim string `json:"x-roles-claim,omitempty"`
 }
 
 // SchemaObject represents a JSON Schema 2020-12 object (the dialect used by OpenAPI 3.1).
