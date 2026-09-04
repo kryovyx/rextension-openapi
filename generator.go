@@ -286,48 +286,23 @@ func (g *Generator) enrichWithValidation(rt rxevent.Route, op *Operation) {
 	}
 }
 
-// extractBodySchema turns a declared body schema into an OpenAPI schema object.
+// extractBodySchema turns a declared body schema into an OpenAPI schema
+// object.
 //
-// This was four reflect calls — MethodByName("Kind"), MethodByName("Types"),
-// two Call(nil)s — ending in `typesResults[0].Interface().([]interface{})`,
-// an unchecked assertion that panicked inside document generation if Types
-// ever returned a differently-typed slice. The interface makes both the
-// lookup and the assertion unnecessary (D20).
+// It is one line now. It used to be a full copy of the Scalar/OneOf/AnyOf/
+// AllOf switch that corex/schema's GenerateBodySchema already implements —
+// two implementations of one wire format inside one module, with the shared
+// one reached only by its own tests. That is exactly the drift W23 exists to
+// prevent, so the copy went and this delegates.
+//
+// Before that it was four reflect calls — MethodByName("Kind"),
+// MethodByName("Types"), two Call(nil)s — ending in
+// `typesResults[0].Interface().([]interface{})`, an unchecked assertion that
+// panicked inside document generation if Types ever returned a
+// differently-typed slice. The interface makes both the lookup and the
+// assertion unnecessary (D20).
 func (g *Generator) extractBodySchema(bs BodySchemaAccessor) *SchemaObject {
-	if bs == nil {
-		return nil
-	}
-	kind := bs.Kind()
-	typesSlice := bs.Types()
-
-	if len(typesSlice) == 0 {
-		return &SchemaObject{Type: "object"}
-	}
-
-	switch kind {
-	case SchemaScalar:
-		return g.schemaGen.Generate(typesSlice[0])
-	case SchemaOneOf:
-		schemas := make([]*SchemaObject, len(typesSlice))
-		for i, t := range typesSlice {
-			schemas[i] = g.schemaGen.Generate(t)
-		}
-		return &SchemaObject{OneOf: schemas}
-	case SchemaAnyOf:
-		schemas := make([]*SchemaObject, len(typesSlice))
-		for i, t := range typesSlice {
-			schemas[i] = g.schemaGen.Generate(t)
-		}
-		return &SchemaObject{AnyOf: schemas}
-	case SchemaAllOf:
-		schemas := make([]*SchemaObject, len(typesSlice))
-		for i, t := range typesSlice {
-			schemas[i] = g.schemaGen.Generate(t)
-		}
-		return &SchemaObject{AllOf: schemas}
-	default:
-		return g.schemaGen.Generate(typesSlice[0])
-	}
+	return g.schemaGen.GenerateBodySchema(bs)
 }
 
 // enrichWithSecurity checks if the route also implements SecuredRouteAccessor

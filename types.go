@@ -9,6 +9,8 @@
 // that conforms to the OpenAPI 3.1 specification.
 package openapi
 
+import "github.com/kryovyx/corex/schema"
+
 // Tag adds metadata to a single tag used by operations.
 type Tag struct {
 	Name         string        `json:"name"`
@@ -140,23 +142,8 @@ type SecuritySchemeObject struct {
 	XRolesClaim string `json:"x-roles-claim,omitempty"`
 }
 
-// SchemaObject represents a JSON Schema 2020-12 object (the dialect used by OpenAPI 3.1).
-type SchemaObject struct {
-	Type        string                   `json:"type,omitempty"`
-	Format      string                   `json:"format,omitempty"`
-	Description string                   `json:"description,omitempty"`
-	Properties  map[string]*SchemaObject `json:"properties,omitempty"`
-	Required    []string                 `json:"required,omitempty"`
-	Items       *SchemaObject            `json:"items,omitempty"`
-	Enum        []interface{}            `json:"enum,omitempty"`
-	Minimum     *float64                 `json:"minimum,omitempty"`
-	Maximum     *float64                 `json:"maximum,omitempty"`
-	MinLength   *int                     `json:"minLength,omitempty"`
-	MaxLength   *int                     `json:"maxLength,omitempty"`
-	Ref         string                   `json:"$ref,omitempty"`
-	OneOf       []*SchemaObject          `json:"oneOf,omitempty"`
-	AnyOf       []*SchemaObject          `json:"anyOf,omitempty"`
-	AllOf       []*SchemaObject          `json:"allOf,omitempty"`
-	Nullable    bool                     `json:"nullable,omitempty"`
-	Examples    []interface{}            `json:"examples,omitempty"`
-}
+// SchemaObject represents a JSON Schema 2020-12 object (the dialect used by
+// OpenAPI 3.1). Aliased from corex/schema, where the type moved with the
+// generator that produces it (W23) — AsyncAPI 3.0 uses the same dialect, so a
+// second declaration would be two names for one wire format.
+type SchemaObject = schema.Schema
