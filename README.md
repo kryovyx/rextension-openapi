@@ -2,8 +2,8 @@
 
 A comprehensive OpenAPI 3.1 specification generator extension for the Rex framework.
 
-[![Go Version](https://img.shields.io/badge/go-1.26+-blue.svg)](https://golang.org/dl/)
-[![Coverage](https://img.shields.io/badge/coverage-68.4%25-yellowgreen.svg)](#)
+[![Go Version](https://img.shields.io/badge/go-1.27+-blue.svg)](https://golang.org/dl/)
+[![Coverage](https://img.shields.io/badge/coverage-94.5%25-brightgreen.svg)](#)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## Overview

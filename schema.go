@@ -269,7 +269,9 @@ func (g *SchemaGenerator) GenerateBodySchema(bs BodySchemaAccessor) *SchemaObjec
 		return &SchemaObject{Type: "object"}
 	}
 
-	switch SchemaKind(bs.Kind()) {
+	// No conversion: SchemaKind is the type rextension declares, shared with
+	// the validation extension, rather than a local mirror of it (D20).
+	switch bs.Kind() {
 	case SchemaScalar:
 		return g.Generate(types[0])
 	case SchemaOneOf:

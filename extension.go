@@ -17,6 +17,7 @@ package openapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	rx "github.com/kryovyx/rextension"
@@ -27,38 +28,55 @@ import (
 type OpenAPIExtension struct {
 	cfg    Config
 	logger rx.Logger
-	rex    rx.Rex // Store reference to Rex for lazy generation
 
 	mu     sync.Mutex
 	routes []rxevent.Route
 
-	// securitySchemes are discovered from DI at generation time.
+	// securitySchemes are resolved once, when the document is generated.
+	//
+	// Guarded by mu, and written exactly once. It used to be written from
+	// whichever request happened to generate the document first, with no
+	// synchronisation at all (D40).
 	securitySchemes []SecuritySchemeAccessor
 
-	// Lazy generation tracking
-	generatedOnce bool
-	docBytes      []byte
+	// spec is the route serving the document. The document itself is
+	// published by atomic swap; see specRoute.
+	spec *specRoute
+
+	// container is captured in OnInitialize so the security scheme registry
+	// can be resolved at generation time.
+	container rx.Container
 }
 
-// NewOpenAPIExtension constructs an OpenAPI extension instance.
+// NewOpenAPIExtension constructs a openapi extension instance.
+//
+// A nil cfg takes the defaults. A non-nil cfg is used **verbatim** (D22/O6).
+//
+// It used to merge field by field — "copy this one if it is non-zero" — which
+// looked like a convenience and behaved as a trap:
+//
+//   - Fields the merge simply forgot were silently ignored. Any value an
+//     application set for them was discarded, and there was nothing to see:
+//     no error, no log line, just the default.
+//   - Fields copied *unconditionally* had the opposite problem. A partial
+//     struct literal like &Config{LivePath: "/x"} zeroed them, so setting one
+//     unrelated field turned another off.
+//   - Zero and "unset" were indistinguishable, so a deliberate zero could not
+//     be expressed at all.
+//
+// Build the config with NewConfig and the With* options; that is the shape
+// that cannot drift out of step with the struct:
+//
+//	openapi.NewConfig(openapi.WithSomething(...))
+//
+// ⚠ A partial struct literal now leaves the rest of the fields at their zero
+// values rather than at their defaults. That is the breaking half of this
+// change, and it is deliberate: silently substituting a default for a field
+// the caller wrote is what produced the traps above.
 func NewOpenAPIExtension(cfg *Config) rx.Extension {
 	c := NewDefaultConfig()
 	if cfg != nil {
-		if cfg.Title != "" {
-			c.Title = cfg.Title
-		}
-		if cfg.Version != "" {
-			c.Version = cfg.Version
-		}
-		if cfg.Description != "" {
-			c.Description = cfg.Description
-		}
-		if cfg.ServePath != "" {
-			c.ServePath = cfg.ServePath
-		}
-		if len(cfg.Tags) > 0 {
-			c.Tags = cfg.Tags
-		}
+		c = cfg
 	}
 	return &OpenAPIExtension{cfg: *c}
 }
@@ -73,81 +91,177 @@ func WithOpenAPI(cfg *Config) rx.Option {
 // OnInitialize subscribes to route registration events to collect routes.
 func (e *OpenAPIExtension) OnInitialize(ctx context.Context, r rx.Rex) error {
 	e.logger = r.Logger()
+	e.container = r.Container()
 
-	// Subscribe to route registration events.
-	r.EventBus().Subscribe(rxevent.EventTypeRouterRouteRegistered, func(ev rxevent.Event) {
-		if routeEv, ok := rxevent.As[rxevent.RouterRouteRegisteredEvent](ev); ok {
-			e.logger.Debug("OpenAPI: Route registered: %s %s", routeEv.Route.Method(), routeEv.Route.Path())
-			// Only collect routes that implement OpenAPIRoute.
-			if oar, isOA := routeEv.Route.(OpenAPIRoute); isOA {
-				e.mu.Lock()
-				e.routes = append(e.routes, routeEv.Route)
-				e.mu.Unlock()
-				e.logger.Info("OpenAPI: Collected route %s %s (opid=%s)",
-					routeEv.Route.Method(), routeEv.Route.Path(), oar.OperationID())
-			} else {
-				e.logger.Debug("OpenAPI: Route %s %s does not implement OpenAPIRoute",
-					routeEv.Route.Method(), routeEv.Route.Path())
-			}
-		}
-	})
+	// Routes are NOT collected from the route-registered event.
+	//
+	// They were, and it raced: that event is delivered asynchronously — the
+	// bus dispatches on worker goroutines — while document generation happens
+	// synchronously when the route table is built. The generated document
+	// could therefore be missing any number of routes, depending purely on
+	// scheduling. It was not detectable in a small application, because a
+	// handful of events are usually drained before the build finishes.
+	//
+	// The framework hands the complete route table to ValidateRoutes instead,
+	// with the router each route belongs to. See ValidateRoutes.
 
 	e.logger.Info("OpenAPI extension initialized, serving at %s", e.cfg.ServePath)
 	return nil
 }
 
-// OnStart registers the OpenAPI spec route. Actual generation happens in OnReady
-// once all routes are registered, but we need the route placeholder now.
+// OnStart registers the OpenAPI spec route.
+//
+// It used to register from OnReady, on the reasoning that "by this point all
+// routes have been registered". That was true, and it was also too late: by
+// OnReady the listeners are bound and serving, so the registration mutated a
+// route trie that in-flight requests were already reading (D12).
+//
+// OnStart is both early enough — the route table is built after every
+// extension's OnStart has run — and late enough, because route collection
+// happens through the route-registered event rather than by scanning at this
+// moment. Routes declared by extensions whose OnStart runs after this one are
+// still collected, since the subscription set up in OnInitialize is what
+// gathers them.
 func (e *OpenAPIExtension) OnStart(ctx context.Context, r rx.Rex) error {
-	return nil
-}
+	e.spec = newSpecRoute(e.cfg.ServePath)
 
-// OnReady registers the spec route handler (document generation is deferred until first request).
-// By this point all routes have been registered.
-func (e *OpenAPIExtension) OnReady(ctx context.Context, r rx.Rex) error {
-	e.rex = r // Store Rex reference for lazy generation
-
-	// Register the spec route with lazy generation (document will be generated on first request).
-	specRoute := newSpecRouteWithGenerator(e.cfg.ServePath, e)
-	if err := r.RegisterRoute(specRoute); err != nil {
-		e.logger.Error("Failed to register OpenAPI spec route: %v", err)
+	serveOn := e.cfg.ServeOnRouter
+	if serveOn == "" {
+		serveOn = rx.DefaultRouterName
+	}
+	if err := r.RegisterRouteToRouter(e.spec, serveOn); err != nil {
+		e.logger.Error("Failed to register the OpenAPI spec route on router %s: %v", serveOn, err)
 		return err
 	}
 
-	e.logger.Info("OpenAPI 3.1 extension ready, spec will be served at %s (generated on first request)",
-		e.cfg.ServePath)
-
+	e.logger.Info("OpenAPI 3.1 extension will serve its spec at %s on router %s",
+		e.cfg.ServePath, serveOn)
 	return nil
 }
 
-// ensureGenerated generates the OpenAPI document on first access (lazy generation).
-// This ensures all routes and extensions have had time to process.
-func (e *OpenAPIExtension) ensureGenerated() ([]byte, error) {
-	e.mu.Lock()
-	if e.generatedOnce {
-		defer e.mu.Unlock()
-		return e.docBytes, nil
+// includesRouter reports whether routes from routerName belong in the
+// document.
+//
+// The default — an empty IncludeRouters — is the default router only. That is
+// deliberately narrow: a document that omits a route can be widened by
+// configuration, whereas a document that published a private route has already
+// published it (D41).
+func (e *OpenAPIExtension) includesRouter(routerName string) bool {
+	if routerName == "" {
+		routerName = rx.DefaultRouterName
 	}
-	e.mu.Unlock()
 
-	routes := func() []rxevent.Route {
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		dst := make([]rxevent.Route, len(e.routes))
-		copy(dst, e.routes)
-		return dst
-	}()
+	for _, excluded := range e.cfg.ExcludeRouters {
+		if excluded == routerName {
+			return false
+		}
+	}
+
+	if len(e.cfg.IncludeRouters) == 0 {
+		return routerName == rx.DefaultRouterName
+	}
+	for _, included := range e.cfg.IncludeRouters {
+		if included == "*" || included == routerName {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateRoutes implements rextension.RouteValidator, and is where the
+// document is generated (D40/P4.14).
+//
+// The framework calls it once, when the route table is built: every route is
+// known, every extension has configured itself, and nothing is serving yet.
+// That is the moment laziness was standing in for.
+//
+// Two consequences worth naming:
+//
+//   - A generation failure is a **startup** error. It used to be a 500 on
+//     every request to the spec path, discoverable only by making one.
+//   - The document, and the security schemes it embeds, are written once from
+//     one goroutine. The lazy version wrote both from whichever request
+//     arrived first, unsynchronised.
+func (e *OpenAPIExtension) ValidateRoutes(routes []rx.RouteInfo) error {
+	if e.spec == nil {
+		// OnStart did not run, so there is nothing to serve. Not an error:
+		// the extension may simply be disabled.
+		return nil
+	}
+
+	e.collect(routes)
+
+	doc, err := e.generate()
+	if err != nil {
+		return fmt.Errorf("failed to generate the OpenAPI document: %w", err)
+	}
+	e.spec.setDocument(doc)
+	return nil
+}
+
+// collect selects the routes that belong in the document.
+//
+// Two filters, in order:
+//
+//  1. The router. Only routers the configuration includes — by default, the
+//     default router alone (D41). Every router used to be collected, so a
+//     route on an internal-only listener was published in the document served
+//     on the public one.
+//  2. The interface. Only routes implementing OpenAPIRoute; anything else has
+//     nothing to document.
+func (e *OpenAPIExtension) collect(routes []rx.RouteInfo) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.routes = e.routes[:0]
+	for _, info := range routes {
+		if !e.includesRouter(info.Router) {
+			e.logger.Debug("OpenAPI: Skipping route %s %s on router %s, which is not included",
+				info.Route.Method(), info.Route.Path(), info.Router)
+			continue
+		}
+
+		oar, isOA := info.Route.(OpenAPIRoute)
+		if !isOA {
+			e.logger.Debug("OpenAPI: Route %s %s does not implement OpenAPIRoute",
+				info.Route.Method(), info.Route.Path())
+			continue
+		}
+
+		e.routes = append(e.routes, info.Route)
+		e.logger.Debug("OpenAPI: Collected route %s %s from router %s (opid=%s)",
+			info.Route.Method(), info.Route.Path(), info.Router, oar.OperationID())
+	}
+	e.logger.Info("OpenAPI: Collected %d route(s) for the document", len(e.routes))
+}
+
+var _ rx.RouteValidator = (*OpenAPIExtension)(nil)
+
+// OnReady is a no-op; the spec route is registered in OnStart.
+func (e *OpenAPIExtension) OnReady(ctx context.Context, r rx.Rex) error { return nil }
+
+// generate builds the OpenAPI document from the collected routes.
+//
+// Called once, from ValidateRoutes, under the extension's own lock. The
+// check-then-build-then-store dance the lazy version needed is gone: there is
+// no cache to check and no second caller to race.
+func (e *OpenAPIExtension) generate() ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	routes := make([]rxevent.Route, len(e.routes))
+	copy(routes, e.routes)
 
 	if e.logger != nil {
-		e.logger.Info("OpenAPI: Lazily generating document with %d collected routes", len(routes))
+		e.logger.Info("OpenAPI: Generating the document from %d collected route(s)", len(routes))
 		for i, rt := range routes {
 			e.logger.Debug("OpenAPI: Processing route %d: %s %s", i, rt.Method(), rt.Path())
 		}
 	}
 
-	// Try to discover security schemes from DI (soft dependency).
-	// The security extension exposes its scheme registry; we try to extract schemes.
-	e.discoverSecuritySchemes(e.rex)
+	// Resolve security schemes from the container (soft dependency). Written
+	// under the same lock as everything else here, once.
+	e.discoverSecuritySchemesLocked()
 
 	// Generate the document.
 	gen := NewGenerator(e.cfg, e.securitySchemes)
@@ -191,30 +305,45 @@ func (e *OpenAPIExtension) ensureGenerated() ([]byte, error) {
 		e.logger.Debug("OpenAPI: Path %s methods: %v", path, methods)
 	}
 
-	e.mu.Lock()
-	e.generatedOnce = true
-	e.docBytes = docBytes
-	e.mu.Unlock()
-
-	e.logger.Info("OpenAPI 3.1 document generated with %d operations", len(doc.Paths))
-
+	e.logger.Info("OpenAPI 3.1 document generated with %d operation(s)", len(doc.Paths))
 	return docBytes, nil
 }
 
-// discoverSecuritySchemes reads security schemes from the shared rextension
-// registry. The security extension (or any other extension) publishes there
-// via rextension.RegisterSecuritySchemes without importing this package.
-func (e *OpenAPIExtension) discoverSecuritySchemes(_ rx.Rex) {
-	schemes := rx.GetSecuritySchemes()
-	if len(schemes) > 0 {
-		e.securitySchemes = schemes
+// discoverSecuritySchemes resolves the security scheme registry from the DI
+// container.
+//
+// This used to read a package-level slice in rextension, published by
+// RegisterSecuritySchemes. The registry is an instance now (D21), resolved
+// through the rextension.SchemeRegistry interface — so neither extension
+// imports the other, and the schemes belong to *this* application rather than
+// to the process.
+//
+// A soft dependency: an application with no security extension resolves
+// nothing and documents no schemes, which is not an error.
+func (e *OpenAPIExtension) discoverSecuritySchemesLocked() {
+	if e.container == nil {
+		return
+	}
+
+	var registry rx.SchemeRegistry
+	if err := e.container.Resolve(&registry); err != nil || registry == nil {
 		if e.logger != nil {
-			e.logger.Info("OpenAPI: Using %d security schemes from rextension registry", len(schemes))
+			e.logger.Debug("OpenAPI: No security scheme registry available: %v", err)
 		}
 		return
 	}
+
+	schemes := registry.Schemes()
+	if len(schemes) == 0 {
+		if e.logger != nil {
+			e.logger.Debug("OpenAPI: The security scheme registry is empty")
+		}
+		return
+	}
+
+	e.securitySchemes = schemes
 	if e.logger != nil {
-		e.logger.Debug("OpenAPI: No security schemes registered")
+		e.logger.Info("OpenAPI: Using %d security scheme(s) from the container registry", len(schemes))
 	}
 }
 

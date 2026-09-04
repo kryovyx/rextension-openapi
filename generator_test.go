@@ -1,6 +1,7 @@
 package openapi_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	openapi "github.com/kryovyx/rextension-openapi"
@@ -74,26 +75,60 @@ type plainRoute struct {
 func (r *plainRoute) Method() string { return r.method }
 func (r *plainRoute) Path() string   { return r.path }
 
-// BodySchema mocks for validation enrichment
+// BodySchema mocks for validation enrichment.
+//
+// Kind returns rextension.SchemaKind, and the route returns
+// rextension.BodySchema — the real contract. These used to be duck-typed
+// (Kind() int, RequestBody() *testBodySchema), and passed only because the
+// generator reached them through reflect.MethodByName, which does not care
+// about types. A mock that cannot satisfy the interface real routes implement
+// is not testing the same code path (D20).
 type testBodySchema struct {
-	kind  int
+	kind  openapi.SchemaKind
 	types []interface{}
 }
 
-func (b *testBodySchema) Kind() int            { return b.kind }
-func (b *testBodySchema) Types() []interface{} { return b.types }
+func (b *testBodySchema) Kind() openapi.SchemaKind { return b.kind }
+func (b *testBodySchema) Types() []interface{}     { return b.types }
 
-// mockValidatedRoute implements route.Route + OpenAPIRoute + RequestBody/Responses
+var _ openapi.BodySchemaAccessor = (*testBodySchema)(nil)
+
+// mockValidatedRoute implements route.Route + OpenAPIRoute + the body-schema
+// contract.
 type mockValidatedRoute struct {
 	mockRoute
 	reqBody   *testBodySchema
 	responses map[int]*testBodySchema
 }
 
-func (r *mockValidatedRoute) RequestBody() *testBodySchema { return r.reqBody }
-func (r *mockValidatedRoute) Responses() map[int]*testBodySchema {
-	return r.responses
+func (r *mockValidatedRoute) RequestBody() openapi.BodySchemaAccessor {
+	if r.reqBody == nil {
+		// A typed nil in an interface is not nil, so return an untyped one:
+		// "no request body" has to read as nil to the generator.
+		return nil
+	}
+	return r.reqBody
 }
+
+func (r *mockValidatedRoute) Responses() map[int]openapi.BodySchemaAccessor {
+	if r.responses == nil {
+		return nil
+	}
+	out := make(map[int]openapi.BodySchemaAccessor, len(r.responses))
+	for status, schema := range r.responses {
+		if schema == nil {
+			// Same reason as RequestBody above: a typed nil in an interface
+			// is not nil, so a nil entry has to be stored untyped for "no
+			// schema for this status" to read as nil to the generator.
+			out[status] = nil
+			continue
+		}
+		out[status] = schema
+	}
+	return out
+}
+
+var _ openapi.ValidatableRouteAccessor = (*mockValidatedRoute)(nil)
 
 // mockRouteWithExamples implements RequestBodyExamplesProvider + ResponseExamplesProvider + ResponseDescriptionProvider
 type mockRouteWithExamples struct {
@@ -264,12 +299,10 @@ func TestGenerator_Generate_SecuritySchemeHTTPBearer(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	schemes := []openapi.SecuritySchemeAccessor{
 		&mockBearerScheme{
-			mockSecurityScheme: mockSecurityScheme{
-				name:        "bearer",
-				typ:         "http",
-				description: "Bearer token auth",
-				challenge:   "Bearer",
-			},
+			name:         "bearer",
+			typ:          "http",
+			description:  "Bearer token auth",
+			challenge:    "Bearer",
 			bearerFormat: "JWT",
 		},
 	}
@@ -318,10 +351,8 @@ func TestGenerator_Generate_SecuritySchemeAPIKey(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	schemes := []openapi.SecuritySchemeAccessor{
 		&mockAPIKeyScheme{
-			mockSecurityScheme: mockSecurityScheme{
-				name: "apiKey",
-				typ:  "apiKey",
-			},
+			name:      "apiKey",
+			typ:       "apiKey",
 			paramName: "X-API-Key",
 			location:  "header",
 		},
@@ -343,13 +374,11 @@ func TestGenerator_Generate_SecuritySchemeAPIKeyCookie(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	schemes := []openapi.SecuritySchemeAccessor{
 		&mockAPIKeyScheme{
-			mockSecurityScheme: mockSecurityScheme{
-				name:        "sessionCookie",
-				typ:         "apiKey",
-				description: "BFF session cookie",
-			},
-			paramName: "session_id",
-			location:  "cookie",
+			name:        "sessionCookie",
+			typ:         "apiKey",
+			description: "BFF session cookie",
+			paramName:   "session_id",
+			location:    "cookie",
 		},
 	}
 	gen := openapi.NewGenerator(cfg, schemes)
@@ -380,8 +409,8 @@ func TestGenerator_Generate_RouteWithSecurity(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockSecuredRoute{
-			mockRoute: mockRoute{method: "GET", path: "/secure", operationID: "secureOp"},
-			schemes:   []string{"bearer"},
+			method: "GET", path: "/secure", operationID: "secureOp",
+			schemes: []string{"bearer"},
 		},
 	}
 
@@ -402,8 +431,8 @@ func TestGenerator_Generate_RouteWithEmptySchemes(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockSecuredRoute{
-			mockRoute: mockRoute{method: "GET", path: "/public", operationID: "publicOp"},
-			schemes:   nil,
+			method: "GET", path: "/public", operationID: "publicOp",
+			schemes: nil,
 		},
 	}
 
@@ -432,10 +461,10 @@ func TestGenerator_Generate_WithValidation(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockValidatedRoute{
-			mockRoute: mockRoute{method: "POST", path: "/users", operationID: "createUser"},
-			reqBody:   &testBodySchema{kind: 0, types: []interface{}{ReqBody{}}},
+			method: "POST", path: "/users", operationID: "createUser",
+			reqBody: &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{ReqBody{}}},
 			responses: map[int]*testBodySchema{
-				201: {kind: 0, types: []interface{}{RespBody{}}},
+				201: {kind: openapi.SchemaScalar, types: []interface{}{RespBody{}}},
 			},
 		},
 	}
@@ -467,7 +496,7 @@ func TestGenerator_Generate_NilRequestBody(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockValidatedRoute{
-			mockRoute: mockRoute{method: "GET", path: "/items", operationID: "listItems"},
+			method: "GET", path: "/items", operationID: "listItems",
 			reqBody:   nil,
 			responses: nil,
 		},
@@ -489,12 +518,12 @@ func TestGenerator_Generate_WithExamples(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockRouteWithExamples{
-			mockValidatedRoute: mockValidatedRoute{
-				mockRoute: mockRoute{method: "POST", path: "/pay", operationID: "pay"},
-				reqBody:   &testBodySchema{kind: 0, types: []interface{}{ReqBody{}}},
-				responses: map[int]*testBodySchema{
-					200: {kind: 0, types: []interface{}{RespBody{}}},
-				},
+			method:      "POST",
+			path:        "/pay",
+			operationID: "pay",
+			reqBody:     &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{ReqBody{}}},
+			responses: map[int]*testBodySchema{
+				200: {kind: openapi.SchemaScalar, types: []interface{}{RespBody{}}},
 			},
 			reqExamples: map[string]openapi.ExampleObject{
 				"example1": {Summary: "Example 1", Value: map[string]string{"name": "foo"}},
@@ -569,8 +598,8 @@ func TestGenerator_Generate_OnlySchemasNoSecurity(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockValidatedRoute{
-			mockRoute: mockRoute{method: "POST", path: "/users", operationID: "createUser"},
-			reqBody:   &testBodySchema{kind: 0, types: []interface{}{ReqBody{}}},
+			method: "POST", path: "/users", operationID: "createUser",
+			reqBody: &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{ReqBody{}}},
 		},
 	}
 
@@ -653,8 +682,8 @@ func TestGenerator_Generate_MultipleSecuritySchemes(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockSecuredRoute{
-			mockRoute: mockRoute{method: "GET", path: "/secure", operationID: "secureOp"},
-			schemes:   []string{"bearer", "basic"},
+			method: "GET", path: "/secure", operationID: "secureOp",
+			schemes: []string{"bearer", "basic"},
 		},
 	}
 
@@ -730,8 +759,8 @@ func TestGenerator_Generate_WithResponseEmptyBodySchema(t *testing.T) {
 
 	routes := []rxevent.Route{
 		&mockValidatedRoute{
-			mockRoute: mockRoute{method: "POST", path: "/items", operationID: "createItem"},
-			reqBody:   &testBodySchema{kind: 0, types: []interface{}{}}, // empty types
+			method: "POST", path: "/items", operationID: "createItem",
+			reqBody: &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{}}, // empty types
 		},
 	}
 
@@ -851,4 +880,195 @@ func TestGenerator_PathParams_NoParams(t *testing.T) {
 	if len(op.Parameters) != 0 {
 		t.Errorf("expected no parameters, got %d", len(op.Parameters))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Body schema composition
+// ---------------------------------------------------------------------------
+
+type schemaReqA struct {
+	Alpha string `json:"alpha"`
+}
+
+type schemaReqB struct {
+	Beta int `json:"beta"`
+}
+
+// Every composition strategy has to reach the document. This was four reflect
+// calls ending in an unchecked assertion that panicked inside document
+// generation if Types ever returned a differently-typed slice (D20).
+func TestGenerator_body_schema_composition(t *testing.T) {
+	cases := []struct {
+		name   string
+		schema *testBodySchema
+		check  func(t *testing.T, s map[string]any)
+	}{
+		{
+			name:   "scalar",
+			schema: &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{schemaReqA{}}},
+			check: func(t *testing.T, s map[string]any) {
+				// A named struct is emitted once into components and
+				// referenced, so the operation carries a $ref rather than an
+				// inline copy.
+				if ref, _ := s["$ref"].(string); ref != "#/components/schemas/schemaReqA" {
+					t.Fatalf("scalar schema = %v, want a $ref to schemaReqA", s)
+				}
+			},
+		},
+		{
+			name:   "oneOf",
+			schema: &testBodySchema{kind: openapi.SchemaOneOf, types: []interface{}{schemaReqA{}, schemaReqB{}}},
+			check:  expectUnion(t, "oneOf", 2),
+		},
+		{
+			name:   "anyOf",
+			schema: &testBodySchema{kind: openapi.SchemaAnyOf, types: []interface{}{schemaReqA{}, schemaReqB{}}},
+			check:  expectUnion(t, "anyOf", 2),
+		},
+		{
+			name:   "allOf",
+			schema: &testBodySchema{kind: openapi.SchemaAllOf, types: []interface{}{schemaReqA{}, schemaReqB{}}},
+			check:  expectUnion(t, "allOf", 2),
+		},
+		{
+			// An unknown kind falls back to the first type rather than
+			// producing nothing, so a schema kind added later still documents
+			// something.
+			name:   "unknown kind falls back to the first type",
+			schema: &testBodySchema{kind: openapi.SchemaKind(99), types: []interface{}{schemaReqA{}}},
+			check: func(t *testing.T, s map[string]any) {
+				if ref, _ := s["$ref"].(string); ref != "#/components/schemas/schemaReqA" {
+					t.Fatalf("the fallback produced %v, want the first type's schema", s)
+				}
+			},
+		},
+		{
+			// No types at all is a plain object, not a nil schema — a nil
+			// would drop the request body from the document entirely.
+			name:   "no types",
+			schema: &testBodySchema{kind: openapi.SchemaOneOf, types: nil},
+			check: func(t *testing.T, s map[string]any) {
+				if s["type"] != "object" {
+					t.Fatalf("expected a bare object schema, got %v", s)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &mockValidatedRoute{
+				method: "POST", path: "/things", operationID: "createThing",
+				reqBody: tc.schema,
+			}
+			doc := generateDoc(t, rt)
+			schema := requestSchema(t, doc, "/things", "post")
+			tc.check(t, schema)
+		})
+	}
+}
+
+// Response schemas take the same path, keyed by status code.
+func TestGenerator_response_schema_composition(t *testing.T) {
+	rt := &mockValidatedRoute{
+		method: "GET", path: "/things", operationID: "listThings",
+		responses: map[int]*testBodySchema{
+			200: {kind: openapi.SchemaScalar, types: []interface{}{schemaReqA{}}},
+			409: {kind: openapi.SchemaOneOf, types: []interface{}{schemaReqA{}, schemaReqB{}}},
+		},
+	}
+	doc := generateDoc(t, rt)
+
+	responses := dig(t, doc, "paths", "/things", "get", "responses")
+	for _, status := range []string{"200", "409"} {
+		if _, ok := responses[status]; !ok {
+			t.Fatalf("status %s is missing from the document: %v", status, responses)
+		}
+	}
+	oneOf := dig(t, responses, "409", "content", "application/json", "schema")
+	if _, ok := oneOf["oneOf"]; !ok {
+		t.Fatalf("the 409 response lost its oneOf composition: %v", oneOf)
+	}
+}
+
+// A nil response schema for a status is skipped rather than documented as an
+// empty body.
+func TestGenerator_skips_a_nil_response_schema(t *testing.T) {
+	rt := &mockValidatedRoute{
+		method: "GET", path: "/things", operationID: "listThings",
+		responses: map[int]*testBodySchema{200: nil},
+	}
+	doc := generateDoc(t, rt)
+	responses := dig(t, doc, "paths", "/things", "get", "responses")
+	if content, ok := responses["200"].(map[string]any)["content"]; ok {
+		t.Fatalf("a nil schema produced content: %v", content)
+	}
+}
+
+// --- helpers ---
+
+func expectUnion(t *testing.T, key string, want int) func(*testing.T, map[string]any) {
+	t.Helper()
+	return func(t *testing.T, s map[string]any) {
+		raw, ok := s[key]
+		if !ok {
+			t.Fatalf("schema has no %s: %v", key, s)
+		}
+		list, ok := raw.([]any)
+		if !ok {
+			t.Fatalf("%s is %T, want a list", key, raw)
+		}
+		if len(list) != want {
+			t.Fatalf("%s has %d entries, want %d", key, len(list), want)
+		}
+	}
+}
+
+func generateDoc(t *testing.T, rt rxevent.Route) map[string]any {
+	t.Helper()
+	gen := openapi.NewGenerator(*openapi.NewDefaultConfig(), nil)
+	generated, err := gen.Generate([]rxevent.Route{rt})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	raw, err := json.Marshal(generated)
+	if err != nil {
+		t.Fatalf("the document does not marshal: %v", err)
+	}
+	// Asserted on the wire form rather than the Go struct: that is what
+	// tooling consumes, and omitempty decides what actually appears.
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("the document is not valid JSON: %v", err)
+	}
+	return doc
+}
+
+func requestSchema(t *testing.T, doc map[string]any, path, method string) map[string]any {
+	t.Helper()
+	return dig(t, doc, "paths", path, method, "requestBody", "content", "application/json", "schema")
+}
+
+func dig(t *testing.T, m map[string]any, keys ...string) map[string]any {
+	t.Helper()
+	cur := m
+	for i, k := range keys {
+		next, ok := cur[k]
+		if !ok {
+			t.Fatalf("key %q missing at depth %d; have %v", k, i, keysOf(cur))
+		}
+		cur, ok = next.(map[string]any)
+		if !ok {
+			t.Fatalf("key %q at depth %d is %T, want an object", k, i, next)
+		}
+	}
+	return cur
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

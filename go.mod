@@ -1,6 +1,6 @@
 module github.com/kryovyx/rextension-openapi
 
-go 1.26.0
+go 1.27
 
 require github.com/kryovyx/dix v0.1.0 // indirect
 

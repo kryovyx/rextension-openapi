@@ -11,29 +11,60 @@ package openapi
 
 import (
 	"fmt"
-	"reflect"
 	"strings"
 
 	rxevent "github.com/kryovyx/rextension/event"
 )
 
-// extractPathParams parses an OpenAPI-style path (e.g. "/users/{id}/posts/{postID}")
-// and returns a slice of Parameter objects for every {param} segment.
-// The path is already in OpenAPI format so it is returned unchanged.
+// wildcardParamDescription explains the one place a Rex path has no exact
+// OpenAPI equivalent.
+const wildcardParamDescription = "Matches the remainder of the path, including any \"/\" separators. " +
+	"OpenAPI has no notation for a multi-segment path parameter, so tooling may " +
+	"percent-encode \"/\" as %2F when constructing requests from this document; " +
+	"the server accepts the unencoded form."
+
+// extractPathParams parses a Rex route path and returns the OpenAPI path plus a
+// Parameter for every variable segment.
+//
+// Two segment kinds:
+//
+//   - "{name}" is already OpenAPI notation and passes through as a required
+//     string path parameter.
+//   - "*" is a Rex wildcard matching the remainder of the path, separators
+//     included. OpenAPI has no notation for that, so it is emitted as
+//     "{path}" with a description saying what it really matches (D42/O15).
+//
+// The wildcard case is a deliberate approximation rather than an omission.
+// Silently dropping a route that exists is worse: a document that does not
+// mention /files/* leaves a client with no way to discover the endpoint at
+// all, whereas an approximate parameter with an honest description leaves it
+// with a workable one. "{path}" is the closest legal representation.
 func extractPathParams(path string) (openAPIPath string, params []*Parameter) {
 	parts := strings.Split(path, "/")
-	for _, p := range parts {
-		if strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}") {
-			name := p[1 : len(p)-1]
+	for i, p := range parts {
+		switch {
+		case strings.HasPrefix(p, "{") && strings.HasSuffix(p, "}"):
 			params = append(params, &Parameter{
-				Name:     name,
+				Name:     p[1 : len(p)-1],
 				In:       "path",
 				Required: true,
 				Schema:   &SchemaObject{Type: "string"},
 			})
+
+		case p == "*":
+			// Rendered as a named parameter, because a bare "*" is not valid
+			// in an OpenAPI path template.
+			parts[i] = "{path}"
+			params = append(params, &Parameter{
+				Name:        "path",
+				In:          "path",
+				Required:    true,
+				Description: wildcardParamDescription,
+				Schema:      &SchemaObject{Type: "string"},
+			})
 		}
 	}
-	return path, params
+	return strings.Join(parts, "/"), params
 }
 
 // Generator assembles an OpenAPI 3.1 Document from a set of routes.
@@ -90,16 +121,14 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 				sso.Scheme = "basic"
 			}
 		case "apiKey":
-			// Extract name and in from the scheme if it exposes them.
-			// ParamName() must return string; Location() may return a named
-			// string type (e.g. APIKeyLocation) so we use reflection for it.
-			if ak, ok := ss.(interface{ ParamName() string }); ok {
-				sso.Name = ak.ParamName()
-			}
-			if lv := reflect.ValueOf(ss).MethodByName("Location"); lv.IsValid() {
-				if res := lv.Call(nil); len(res) == 1 {
-					sso.In = fmt.Sprintf("%s", res[0].Interface())
-				}
+			// One interface assertion for both fields. This used to read
+			// ParamName through an inline interface and Location through
+			// reflect.MethodByName, because Location returned a named string
+			// type that no interface could declare. It returns a plain string
+			// now, so both come from ParameterizedScheme (D20).
+			if ps, ok := ss.(ParameterizedScheme); ok {
+				sso.Name = ps.ParamName()
+				sso.In = ps.Location()
 			}
 		}
 		if rcp, ok := ss.(RoleClaimProvider); ok {
@@ -116,8 +145,6 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 		if !ok {
 			continue // Not an OpenAPI route — skip.
 		}
-		// Debug: log which routes are being processed
-		_ = oar // Use variable to avoid unused error
 
 		op := &Operation{
 			OperationID: oar.OperationID(),
@@ -143,6 +170,15 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 		if len(op.Responses) == 0 {
 			op.Responses["200"] = &Response{Description: "Successful response"}
 		}
+
+		// Document the error format (P3.6/P4.16).
+		//
+		// Every error the framework and its extensions produce is an RFC 9457
+		// problem document served as application/problem+json. A client
+		// generated from a document that does not say so will try to parse
+		// errors as whatever the success media type was, and fail — so the
+		// spec has to carry it.
+		g.addProblemResponses(op)
 
 		// Add operation to path item.
 		if doc.Paths[openAPIPath] == nil {
@@ -173,33 +209,36 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 	return doc, nil
 }
 
-// enrichWithValidation uses reflection to call RequestBody() and Responses()
-// on the route. This works with any type implementing those methods (e.g.,
-// validation.ValidatableRoute) without importing the validation package.
+// enrichWithValidation reads the route's declared request and response body
+// schemas through rextension.BodySchemaProvider.
+//
+// This was reflection — reflect.MethodByName("RequestBody") and
+// ("Responses"), plus MapKeys/MapIndex to walk the returned map — because the
+// openapi and validation extensions had no shared type. They do now, so the
+// whole thing is a type assertion (D20). A route that declares no schemas
+// simply does not implement the interface.
 func (g *Generator) enrichWithValidation(rt rxevent.Route, op *Operation) {
-	rv := reflect.ValueOf(rt)
+	provider, ok := rt.(ValidatableRouteAccessor)
+	if !ok {
+		return
+	}
 
-	// Try RequestBody() → returns some BodySchema-like interface.
-	if reqMethod := rv.MethodByName("RequestBody"); reqMethod.IsValid() {
-		results := reqMethod.Call(nil)
-		if len(results) == 1 && !results[0].IsNil() {
-			schema := g.extractBodySchema(results[0].Interface())
-			if schema != nil {
-				mt := MediaType{Schema: schema}
-				// Apply named request body examples if the route provides them.
-				if ep, ok := rt.(RequestBodyExamplesProvider); ok {
-					if namedExamples := ep.RequestBodyExamples(); len(namedExamples) > 0 {
-						mt.Examples = make(map[string]*ExampleObject, len(namedExamples))
-						for name, ex := range namedExamples {
-							ex := ex // capture
-							mt.Examples[name] = &ex
-						}
+	if body := provider.RequestBody(); body != nil {
+		if schema := g.extractBodySchema(body); schema != nil {
+			mt := MediaType{Schema: schema}
+			// Apply named request body examples if the route provides them.
+			if ep, ok := rt.(RequestBodyExamplesProvider); ok {
+				if namedExamples := ep.RequestBodyExamples(); len(namedExamples) > 0 {
+					mt.Examples = make(map[string]*ExampleObject, len(namedExamples))
+					for name, ex := range namedExamples {
+						ex := ex // capture
+						mt.Examples[name] = &ex
 					}
 				}
-				op.RequestBody = &RequestBody{
-					Required: true,
-					Content:  map[string]MediaType{"application/json": mt},
-				}
+			}
+			op.RequestBody = &RequestBody{
+				Required: true,
+				Content:  map[string]MediaType{"application/json": mt},
 			}
 		}
 	}
@@ -215,70 +254,51 @@ func (g *Generator) enrichWithValidation(rt rxevent.Route, op *Operation) {
 		respDescriptions = dp.ResponseDescriptions()
 	}
 
-	// Try Responses() → returns map[int]BodySchema-like.
-	if respMethod := rv.MethodByName("Responses"); respMethod.IsValid() {
-		results := respMethod.Call(nil)
-		if len(results) == 1 && !results[0].IsNil() {
-			// Iterate the map via reflection.
-			mapVal := results[0]
-			if mapVal.Kind() == reflect.Map {
-				for _, key := range mapVal.MapKeys() {
-					statusCode := int(key.Int())
-					val := mapVal.MapIndex(key).Interface()
-					schema := g.extractBodySchema(val)
-					if schema != nil {
-						sKey := fmt.Sprintf("%d", statusCode)
-						mt := MediaType{Schema: schema}
-						// Apply named examples for this status code if available.
-						if namedRespExamples != nil {
-							if examples, ok := namedRespExamples[statusCode]; ok && len(examples) > 0 {
-								mt.Examples = make(map[string]*ExampleObject, len(examples))
-								for name, ex := range examples {
-									ex := ex // capture
-									mt.Examples[name] = &ex
-								}
-							}
-						}
-						// Resolve response description.
-						desc := fmt.Sprintf("Response for status %d", statusCode)
-						if respDescriptions != nil {
-							if d, ok := respDescriptions[statusCode]; ok && d != "" {
-								desc = d
-							}
-						}
-						op.Responses[sKey] = &Response{
-							Description: desc,
-							Content:     map[string]MediaType{"application/json": mt},
-						}
-					}
-				}
+	// Response schemas, keyed by status code. A plain map range, where this
+	// was reflect MapKeys/MapIndex.
+	for statusCode, body := range provider.Responses() {
+		if body == nil {
+			continue
+		}
+		schema := g.extractBodySchema(body)
+		if schema == nil {
+			continue
+		}
+
+		mt := MediaType{Schema: schema}
+		// Apply named examples for this status code if available.
+		if examples, ok := namedRespExamples[statusCode]; ok && len(examples) > 0 {
+			mt.Examples = make(map[string]*ExampleObject, len(examples))
+			for name, ex := range examples {
+				ex := ex // capture
+				mt.Examples[name] = &ex
 			}
+		}
+		// Resolve response description.
+		desc := fmt.Sprintf("Response for status %d", statusCode)
+		if d, ok := respDescriptions[statusCode]; ok && d != "" {
+			desc = d
+		}
+		op.Responses[fmt.Sprintf("%d", statusCode)] = &Response{
+			Description: desc,
+			Content:     map[string]MediaType{"application/json": mt},
 		}
 	}
 }
 
-// extractBodySchema extracts Kind() and Types() from a value via reflection.
-// Works with any type that has these two methods (e.g., validation.BodySchema).
-func (g *Generator) extractBodySchema(v interface{}) *SchemaObject {
-	if v == nil {
+// extractBodySchema turns a declared body schema into an OpenAPI schema object.
+//
+// This was four reflect calls — MethodByName("Kind"), MethodByName("Types"),
+// two Call(nil)s — ending in `typesResults[0].Interface().([]interface{})`,
+// an unchecked assertion that panicked inside document generation if Types
+// ever returned a differently-typed slice. The interface makes both the
+// lookup and the assertion unnecessary (D20).
+func (g *Generator) extractBodySchema(bs BodySchemaAccessor) *SchemaObject {
+	if bs == nil {
 		return nil
 	}
-	rv := reflect.ValueOf(v)
-
-	kindMethod := rv.MethodByName("Kind")
-	typesMethod := rv.MethodByName("Types")
-	if !kindMethod.IsValid() || !typesMethod.IsValid() {
-		return nil
-	}
-
-	kindResults := kindMethod.Call(nil)
-	typesResults := typesMethod.Call(nil)
-	if len(kindResults) != 1 || len(typesResults) != 1 {
-		return nil
-	}
-
-	kind := SchemaKind(kindResults[0].Int())
-	typesSlice := typesResults[0].Interface().([]interface{})
+	kind := bs.Kind()
+	typesSlice := bs.Types()
 
 	if len(typesSlice) == 0 {
 		return &SchemaObject{Type: "object"}
@@ -346,5 +366,100 @@ func (g *Generator) enrichWithSecurity(rt rxevent.Route, op *Operation) {
 		if roleMap := rg.RequiredRoles(); len(roleMap) > 0 {
 			op.XRequiredRoles = roleMap
 		}
+	}
+}
+
+// problemSchema is the RFC 9457 problem details schema, referenced by every
+// documented error response.
+//
+// Declared inline rather than as a component reference, because the generator
+// has no component-schema registry and a $ref to something absent is worse
+// than a repeated inline schema.
+func problemSchema() *SchemaObject {
+	return &SchemaObject{
+		Type: "object",
+		Properties: map[string]*SchemaObject{
+			"type": {
+				Type:        "string",
+				Description: "A URI identifying the problem type.",
+			},
+			"title": {
+				Type:        "string",
+				Description: "A short, human-readable summary of the problem type. Stable across occurrences.",
+			},
+			"status": {
+				Type:        "integer",
+				Description: "The HTTP status code.",
+			},
+			"detail": {
+				Type:        "string",
+				Description: "A human-readable explanation specific to this occurrence.",
+			},
+			"instance": {
+				Type:        "string",
+				Description: "A URI identifying this specific occurrence, carrying the request identifier.",
+			},
+		},
+		Required: []string{"type", "title", "status"},
+	}
+}
+
+// problemResponse builds a documented error response.
+func problemResponse(description string) *Response {
+	return &Response{
+		Description: description,
+		Content: map[string]MediaType{
+			"application/problem+json": {Schema: problemSchema()},
+		},
+	}
+}
+
+// addProblemResponses documents the error statuses an operation can produce
+// (P3.6/P4.16).
+//
+// Two categories, with different precedence, and the distinction matters:
+//
+//   - **Framework-owned** statuses are answered by middleware. The route's
+//     handler never runs, so whatever the route declared for that status is
+//     simply not what a client receives. These **override** the route's own
+//     declaration.
+//   - **Handler-owned** statuses can come from the handler itself, so a
+//     route's own declaration is authoritative and these are only added when
+//     absent.
+//
+// Getting the precedence backwards produces a document that is confidently
+// wrong: the sandbox's routes declared a 422 with their own error DTO, while
+// the validation middleware answers 422 with an RFC 9457 problem document. A
+// generated client would have parsed the wrong shape, and the document would
+// have looked like the authority on it.
+func (g *Generator) addProblemResponses(op *Operation) {
+	// Answered by middleware; the handler is never reached.
+	frameworkOwned := map[string]string{}
+
+	// Only when the operation is actually secured does 401/403 apply.
+	if len(op.Security) > 0 {
+		frameworkOwned["401"] = "Authentication is required and was not provided, or was not accepted."
+		frameworkOwned["403"] = "The authenticated principal is not permitted to perform this operation."
+	}
+	// Only when there is a request body can its media type or shape be wrong.
+	if op.RequestBody != nil {
+		frameworkOwned["415"] = "The request body's Content-Type is not supported."
+		frameworkOwned["422"] = "The request body failed validation."
+	}
+
+	for status, description := range frameworkOwned {
+		op.Responses[status] = problemResponse(description)
+	}
+
+	// May come from the handler, so only documented when the route did not.
+	handlerOwned := map[string]string{
+		"400": "The request is malformed.",
+		"500": "An unexpected server-side failure.",
+	}
+	for status, description := range handlerOwned {
+		if _, declared := op.Responses[status]; declared {
+			continue
+		}
+		op.Responses[status] = problemResponse(description)
 	}
 }

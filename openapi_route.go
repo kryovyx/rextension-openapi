@@ -20,32 +20,45 @@ type OpenAPIRoute interface {
 }
 
 // --- Soft-dependency interfaces ---
-// These are re-declared locally so the openapi module does not import
-// rextension-validation or rextension-security directly.
-// Routes that implement both OpenAPIRoute and these interfaces get richer
-// documentation automatically.
+// These are aliases of the contracts declared in rextension, so the openapi
+// module documents routes and schemes without importing
+// rextension-validation or rextension-security. Routes that implement
+// OpenAPIRoute alongside these get richer documentation automatically.
 
-// SchemaKind mirrors validation.SchemaKind for local use.
-type SchemaKind int
+// SchemaKind describes the composition strategy for a body schema.
+// Aliased from rextension.
+type SchemaKind = rx.SchemaKind
 
+// Schema composition strategies. Aliased from rextension.
 const (
-	SchemaScalar SchemaKind = iota
-	SchemaOneOf
-	SchemaAnyOf
-	SchemaAllOf
+	// SchemaScalar indicates a single concrete type.
+	SchemaScalar = rx.SchemaScalar
+	// SchemaOneOf indicates exactly one of the listed types must match.
+	SchemaOneOf = rx.SchemaOneOf
+	// SchemaAnyOf indicates one or more of the listed types may match.
+	SchemaAnyOf = rx.SchemaAnyOf
+	// SchemaAllOf indicates all of the listed types must match (merged).
+	SchemaAllOf = rx.SchemaAllOf
 )
 
-// BodySchemaAccessor mirrors validation.BodySchema.
-type BodySchemaAccessor interface {
-	Kind() SchemaKind
-	Types() []interface{}
-}
+// BodySchemaAccessor describes the shape of a request or response body.
+// Aliased from rextension.
+type BodySchemaAccessor = rx.BodySchema
 
-// ValidatableRouteAccessor is intentionally not defined as a Go interface.
-// Instead, the generator uses reflection to call RequestBody()/Responses()
-// on routes and extract Kind()/Types() from the returned body schemas.
-// This avoids requiring routes to implement a second interface just for OpenAPI;
-// any route implementing validation.ValidatableRoute works automatically.
+// ValidatableRouteAccessor is implemented by a route that declares its request
+// and response body schemas.
+//
+// This used to be deliberately *not* an interface: the generator called
+// RequestBody() and Responses() through reflect.MethodByName, on the reasoning
+// that "any route implementing validation.ValidatableRoute works
+// automatically". Reflection was really a workaround for the two extensions
+// having no shared type — and it came with an unchecked
+// `.([]interface{})` assertion that panicked inside document generation on any
+// unexpected slice type.
+//
+// The contract now lives in rextension, so both extensions assert the same
+// named interface and the reflection is gone (D20).
+type ValidatableRouteAccessor = rx.BodySchemaProvider
 
 // SecuredRouteAccessor mirrors security.SecuredRoute.
 // If a route implements this alongside OpenAPIRoute, the generator
@@ -77,9 +90,20 @@ type RoleGuardedRouteAccessor interface {
 // the generator emits x-roles-claim on the security scheme object in the
 // components section, enabling UI tooling (e.g. the Swagger UI plugin) to
 // surface the claim name alongside the required-roles badges.
-type RoleClaimProvider interface {
-	RolesClaim() string
-}
+//
+// Aliased from rextension.
+type RoleClaimProvider = rx.RoleClaimProvider
+
+// ParameterizedScheme is implemented by a scheme carried in a named request
+// parameter — an API key in a header, query string or cookie.
+//
+// Aliased from rextension. Reading the location through this interface is what
+// replaced reflect.MethodByName("Location") in the generator (D20).
+type ParameterizedScheme = rx.ParameterizedScheme
+
+// BearerFormatProvider is implemented by a bearer scheme that documents its
+// token format, e.g. "JWT". Aliased from rextension.
+type BearerFormatProvider = rx.BearerFormatProvider
 
 // SecuritySchemeAccessor mirrors security.SecurityScheme for doc generation.
 type SecuritySchemeAccessor = rx.SecuritySchemeAccessor

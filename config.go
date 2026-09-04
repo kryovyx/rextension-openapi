@@ -19,6 +19,31 @@ type Config struct {
 	ServePath string
 	// Tags defines top-level tag descriptions for the document.
 	Tags []Tag
+
+	// IncludeRouters names the routers whose routes appear in the document.
+	//
+	// Empty means the default router only, which is the safe default (D41).
+	// The generator used to collect from **every** router, so a route on an
+	// internal-only listener was published in the document served on the
+	// public one — the sandbox leaked its `internal` router that way.
+	//
+	// A router existing on a separate port is usually a statement that its
+	// routes are not for the same audience. The document should not
+	// contradict that.
+	//
+	// Use "*" to include every router explicitly.
+	IncludeRouters []string
+
+	// ExcludeRouters names routers to omit, applied after IncludeRouters.
+	//
+	// For the "everything except" case: IncludeRouters: []string{"*"} with
+	// ExcludeRouters naming the private ones.
+	ExcludeRouters []string
+
+	// ServeOnRouter names the router that serves the document.
+	//
+	// Empty means the default router.
+	ServeOnRouter string
 }
 
 // NewDefaultConfig returns the default configuration.
@@ -68,6 +93,23 @@ func WithTags(tags ...Tag) ConfigOption {
 	return func(cfg *Config) {
 		cfg.Tags = append(cfg.Tags, tags...)
 	}
+}
+
+// WithIncludeRouters sets which routers' routes appear in the document.
+// Pass "*" to include every router. Empty means the default router only.
+func WithIncludeRouters(routers ...string) ConfigOption {
+	return func(cfg *Config) { cfg.IncludeRouters = routers }
+}
+
+// WithExcludeRouters names routers to omit, applied after WithIncludeRouters.
+func WithExcludeRouters(routers ...string) ConfigOption {
+	return func(cfg *Config) { cfg.ExcludeRouters = routers }
+}
+
+// WithServeOnRouter names the router that serves the document.
+// Empty means the default router.
+func WithServeOnRouter(router string) ConfigOption {
+	return func(cfg *Config) { cfg.ServeOnRouter = router }
 }
 
 // NewConfig creates a config with the given options applied on top of defaults.
