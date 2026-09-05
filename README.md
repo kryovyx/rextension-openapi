@@ -222,6 +222,13 @@ openapi.WithOpenAPI(openapi.NewConfig(
 7. **Use tags to organize operations**: Group related endpoints under the same tags for better navigation
 8. **Customize the serve path**: In production, consider serving the spec at a well-known path like `/openapi.json` or `/docs/openapi.json`
 
+## Upgrading
+
+**v0.2.1 → v0.3.0.** [MIGRATION.md](MIGRATION.md) is the upgrade guide for this
+module, written to stand alone — it carries the dependency-ordered `go get`
+sequence, every breaking change here, and what to verify afterwards. Other
+modules of the framework each have their own; that file links to them.
+
 ## Contributing
 
 **The framework is in alpha, and external contributions open at `v1.0.0`.**
