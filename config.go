@@ -7,8 +7,23 @@
 // This file defines the extension configuration and functional options.
 package openapi
 
+// DefaultName is the instance name used when Config.Name is empty.
+const DefaultName = "openapi"
+
 // Config controls the OpenAPI extension behavior.
 type Config struct {
+	// Name identifies this instance in log lines and startup errors.
+	//
+	// An application that serves more than one document runs more than one
+	// instance of this extension — one per audience, each with its own
+	// IncludeRouters and ServeOnRouter (D49). Two instances used to log
+	// identically, so a line reporting how many routes were collected named
+	// neither the document being built nor the router it would serve on, and
+	// a generation failure was reported by Go type alone.
+	//
+	// Empty means DefaultName.
+	Name string
+
 	// Title is the API title in the info section.
 	Title string
 	// Version is the API version in the info section.
@@ -49,6 +64,7 @@ type Config struct {
 // NewDefaultConfig returns the default configuration.
 func NewDefaultConfig() *Config {
 	return &Config{
+		Name:      DefaultName,
 		Title:     "API",
 		Version:   "1.0.0",
 		ServePath: "/openapi.json",
@@ -57,6 +73,15 @@ func NewDefaultConfig() *Config {
 
 // ConfigOption allows functional configuration.
 type ConfigOption func(*Config)
+
+// WithName sets the instance name used in log lines and startup errors.
+// Empty means DefaultName. Give each instance its own name when an
+// application serves more than one document (D49).
+func WithName(name string) ConfigOption {
+	return func(cfg *Config) {
+		cfg.Name = name
+	}
+}
 
 // WithTitle sets the API title.
 func WithTitle(title string) ConfigOption {

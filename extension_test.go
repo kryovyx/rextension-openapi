@@ -732,6 +732,7 @@ func TestValidateRoutes_rejects_colliding_documented_paths(t *testing.T) {
 		{Route: docRoute{http.MethodGet, "/users", "adminListUsers"}, Router: "admin"},
 	}
 	ext := openapi.NewOpenAPIExtension(openapi.NewConfig(
+		openapi.WithName("public"),
 		openapi.WithIncludeRouters("*"),
 	))
 	r := newMockRex()
@@ -745,7 +746,7 @@ func TestValidateRoutes_rejects_colliding_documented_paths(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a startup error for two routes on the same documented path")
 	}
-	for _, want := range []string{"GET /users", "publicListUsers", "adminListUsers"} {
+	for _, want := range []string{"openapi[public]", "GET /users", "publicListUsers", "adminListUsers"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the error does not mention %q: %v", want, err)
 		}
@@ -780,5 +781,135 @@ func TestValidateRoutes_allows_different_methods_on_one_path(t *testing.T) {
 
 	if got := paths(t, serve(t, spec)); len(got) != 1 {
 		t.Fatalf("expected one path carrying both operations, got %v", keys(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// One instance, one document (D49)
+// ---------------------------------------------------------------------------
+
+// Serving a public document on the public listener and a full one on the
+// internal listener is two instances of this extension, not one instance with
+// a list of documents. Nothing in the framework prevents it — WithExtensions
+// does not deduplicate, ValidateRoutes is called on each validator with the
+// whole table, and two spec routes on different routers do not collide.
+//
+// This test pins that arrangement, because it is the documented answer to
+// "how do I serve more than one document" and nothing else asserts it.
+func TestTwoInstances_serve_two_documents(t *testing.T) {
+	routes := []rx.RouteInfo{
+		{Route: docRoute{http.MethodGet, "/users", "listUsers"}, Router: rx.DefaultRouterName},
+		{Route: docRoute{http.MethodGet, "/schemas", "listSchemas"},
+			Router: "internal", BaseURL: "/internal"},
+	}
+
+	public := openapi.NewOpenAPIExtension(openapi.NewConfig(
+		openapi.WithName("public"),
+		openapi.WithTitle("Public API"),
+	))
+	internal := openapi.NewOpenAPIExtension(openapi.NewConfig(
+		openapi.WithName("internal"),
+		openapi.WithTitle("Internal API"),
+		openapi.WithIncludeRouters("*"),
+		openapi.WithServeOnRouter("internal"),
+	))
+
+	r := newMockRex()
+	for _, ext := range []rx.Extension{public, internal} {
+		if err := ext.OnInitialize(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+		if err := ext.OnStart(context.Background(), r); err != nil {
+			t.Fatal(err)
+		}
+		if err := ext.(rx.RouteValidator).ValidateRoutes(routes); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(r.registered) != 2 {
+		t.Fatalf("expected two spec routes, got %d", len(r.registered))
+	}
+	if r.registered[0].router != rx.DefaultRouterName {
+		t.Errorf("the public document is served on router %q", r.registered[0].router)
+	}
+	if r.registered[1].router != "internal" {
+		t.Errorf("the internal document is served on router %q", r.registered[1].router)
+	}
+
+	pub := paths(t, serve(t, r.registered[0].route))
+	if _, leaked := pub["/internal/schemas"]; leaked {
+		t.Error("the internal route leaked into the public document")
+	}
+	if _, ok := pub["/users"]; !ok {
+		t.Errorf("the public document is missing /users: %v", keys(pub))
+	}
+
+	priv := paths(t, serve(t, r.registered[1].route))
+	for _, want := range []string{"/users", "/internal/schemas"} {
+		if _, ok := priv[want]; !ok {
+			t.Errorf("the internal document is missing %q: %v", want, keys(priv))
+		}
+	}
+}
+
+// The name defaults rather than being empty, so the log prefix is never
+// "openapi[]".
+func TestConfig_name(t *testing.T) {
+	if got := openapi.NewDefaultConfig().Name; got != openapi.DefaultName {
+		t.Errorf("the default name is %q, want %q", got, openapi.DefaultName)
+	}
+	if got := openapi.NewConfig(openapi.WithName("internal")).Name; got != "internal" {
+		t.Errorf("WithName did not apply: %q", got)
+	}
+	// An explicitly empty name still produces a usable prefix, which is what
+	// the tag fallback is for — asserted through the error text, the only
+	// place the tag is observable from outside.
+	ext := openapi.NewOpenAPIExtension(&openapi.Config{
+		ServePath:      "/openapi.json",
+		IncludeRouters: []string{"*"},
+	})
+	r := newMockRex()
+	if err := ext.OnInitialize(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if err := ext.OnStart(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	err := ext.(rx.RouteValidator).ValidateRoutes([]rx.RouteInfo{
+		{Route: docRoute{http.MethodGet, "/x", "a"}, Router: rx.DefaultRouterName},
+		{Route: docRoute{http.MethodGet, "/x", "b"}, Router: "other"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "openapi["+openapi.DefaultName+"]") {
+		t.Errorf("an empty name must fall back to %q: %v", openapi.DefaultName, err)
+	}
+}
+
+// OnStart and ValidateRoutes without OnInitialize have no logger yet. The log
+// helpers guard for it, because a nil logger must not turn a registration
+// failure into a panic that hides the failure.
+func TestWithoutOnInitialize_the_log_helpers_do_not_panic(t *testing.T) {
+	failing := openapi.NewOpenAPIExtension(openapi.NewConfig())
+	r := newMockRex()
+	r.registerErr = http.ErrHandlerTimeout
+	if err := failing.OnStart(context.Background(), r); err == nil {
+		t.Fatal("a failed spec-route registration must be returned")
+	}
+
+	ext := openapi.NewOpenAPIExtension(openapi.NewConfig())
+	fresh := newMockRex()
+	if err := ext.OnStart(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	err := ext.(rx.RouteValidator).ValidateRoutes([]rx.RouteInfo{
+		{Route: docRoute{http.MethodGet, "/a", "a"}, Router: rx.DefaultRouterName},
+		{Route: undocumentedRoute{path: "/b"}, Router: rx.DefaultRouterName},
+		{Route: docRoute{http.MethodGet, "/c", "c"}, Router: "excluded"},
+	})
+	if err != nil {
+		t.Fatalf("ValidateRoutes: %v", err)
+	}
+	if got := paths(t, serve(t, fresh.registered[0].route)); len(got) != 1 {
+		t.Fatalf("expected 1 path, got %v", keys(got))
 	}
 }

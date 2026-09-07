@@ -212,10 +212,42 @@ Two routes that resolve to the same method and documented path are a **startup
 error**, naming both operations and both routers. They used to overwrite one
 another, so an operation simply vanished from the document.
 
+### More than one document
+
+One instance of the extension serves one document. An application that wants a
+public document on its public listener and a full one on its internal listener
+runs **two instances** — each with its own name, its own router scope, and its
+own `ServeOnRouter`:
+
+```go
+rex.New(
+    // Public: the default router only, served on the default listener.
+    openapi.WithOpenAPI(openapi.NewConfig(
+        openapi.WithName("public"),
+        openapi.WithTitle("Public API"),
+    )),
+    // Internal: everything, served on the internal listener only.
+    openapi.WithOpenAPI(openapi.NewConfig(
+        openapi.WithName("internal"),
+        openapi.WithTitle("Internal API"),
+        openapi.WithIncludeRouters("*"),
+        openapi.WithServeOnRouter("internal"),
+    )),
+    // The UI beside the internal document.
+    swagger.WithSwagger(swagger.NewConfig(
+        swagger.WithServeOnRouter("internal"),
+    )),
+)
+```
+
+`Name` is what tells the two apart in the logs and in startup errors; both
+instances would otherwise report identically.
+
 ## Configuration Reference
 
 | Field            | Type       | Default           | Description                                                  |
 |------------------|------------|-------------------|--------------------------------------------------------------|
+| `Name`           | `string`   | `"openapi"`       | Instance name in log lines and startup errors                |
 | `Title`          | `string`   | `"API"`           | API title in the info section                                |
 | `Version`        | `string`   | `"1.0.0"`         | API version in the info section                              |
 | `Description`    | `string`   | `""`              | API description in the info section                          |
@@ -229,6 +261,7 @@ another, so an operation simply vanished from the document.
 
 ```go
 openapi.WithOpenAPI(openapi.NewConfig(
+    openapi.WithName("public"),
     openapi.WithTitle("My API"),
     openapi.WithVersion("2.0.0"),
     openapi.WithDescription("My awesome API"),
@@ -238,6 +271,7 @@ openapi.WithOpenAPI(openapi.NewConfig(
 
 | Option                    | Description                                          |
 |---------------------------|------------------------------------------------------|
+| `WithName(s)`             | Names the instance in logs and startup errors        |
 | `WithTitle(s)`            | Sets the API title                                   |
 | `WithVersion(s)`          | Sets the API version                                 |
 | `WithDescription(s)`      | Sets the API description                             |
@@ -256,7 +290,8 @@ openapi.WithOpenAPI(openapi.NewConfig(
 5. **Add response descriptions**: Use `ResponseDescriptionProvider` to document what each status code means in your domain
 6. **Declare per-status-code responses**: Return all possible response types from `Responses()` for complete documentation
 7. **Use tags to organize operations**: Group related endpoints under the same tags for better navigation
-8. **Customize the serve path**: In production, consider serving the spec at a well-known path like `/openapi.json` or `/docs/openapi.json`
+8. **Keep the internal API in its own document**: run a second instance with `WithIncludeRouters` and `WithServeOnRouter` rather than widening the public one
+9. **Customize the serve path**: In production, consider serving the spec at a well-known path like `/openapi.json` or `/docs/openapi.json`
 
 ## Upgrading
 

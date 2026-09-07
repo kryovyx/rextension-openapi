@@ -100,6 +100,38 @@ func routerNameOf(name string) string {
 	return name
 }
 
+// tag identifies this instance in log lines and startup errors (D49).
+func (e *OpenAPIExtension) tag() string {
+	if e.cfg.Name == "" {
+		return DefaultName
+	}
+	return e.cfg.Name
+}
+
+// infof, debugf and errorf prefix every line with the instance name.
+//
+// An application serving a public and an internal document runs two instances,
+// and they used to log identically — so "Collected 12 route(s)" named neither
+// the document being built nor the router it would serve on. The nil guard is
+// for the window before OnInitialize captures the logger.
+func (e *OpenAPIExtension) infof(format string, args ...any) {
+	if e.logger != nil {
+		e.logger.Info("openapi[%s]: "+format, append([]any{e.tag()}, args...)...)
+	}
+}
+
+func (e *OpenAPIExtension) debugf(format string, args ...any) {
+	if e.logger != nil {
+		e.logger.Debug("openapi[%s]: "+format, append([]any{e.tag()}, args...)...)
+	}
+}
+
+func (e *OpenAPIExtension) errorf(format string, args ...any) {
+	if e.logger != nil {
+		e.logger.Error("openapi[%s]: "+format, append([]any{e.tag()}, args...)...)
+	}
+}
+
 // SetSecuritySchemes is called by other extensions (like the security extension)
 // to provide security scheme definitions for OpenAPI documentation.
 // OnInitialize subscribes to route registration events to collect routes.
@@ -119,7 +151,7 @@ func (e *OpenAPIExtension) OnInitialize(ctx context.Context, r rx.Rex) error {
 	// The framework hands the complete route table to ValidateRoutes instead,
 	// with the router each route belongs to. See ValidateRoutes.
 
-	e.logger.Info("OpenAPI extension initialized, serving at %s", e.cfg.ServePath)
+	e.infof("initialized, serving at %s", e.cfg.ServePath)
 	return nil
 }
 
@@ -144,11 +176,11 @@ func (e *OpenAPIExtension) OnStart(ctx context.Context, r rx.Rex) error {
 		serveOn = rx.DefaultRouterName
 	}
 	if err := r.RegisterRouteToRouter(e.spec, serveOn); err != nil {
-		e.logger.Error("Failed to register the OpenAPI spec route on router %s: %v", serveOn, err)
+		e.errorf("failed to register the spec route on router %s: %v", serveOn, err)
 		return err
 	}
 
-	e.logger.Info("OpenAPI 3.1 extension will serve its spec at %s on router %s",
+	e.infof("will serve its OpenAPI 3.1 document at %s on router %s",
 		e.cfg.ServePath, serveOn)
 	return nil
 }
@@ -207,7 +239,7 @@ func (e *OpenAPIExtension) ValidateRoutes(routes []rx.RouteInfo) error {
 
 	doc, err := e.generate()
 	if err != nil {
-		return fmt.Errorf("failed to generate the OpenAPI document: %w", err)
+		return fmt.Errorf("openapi[%s]: failed to generate the document: %w", e.tag(), err)
 	}
 	e.spec.setDocument(doc)
 	return nil
@@ -233,14 +265,14 @@ func (e *OpenAPIExtension) collect(routes []rx.RouteInfo) {
 			continue
 		}
 		if !e.includesRouter(info.Router) {
-			e.logger.Debug("OpenAPI: Skipping route %s %s on router %s, which is not included",
+			e.debugf("skipping route %s %s on router %s, which is not included",
 				info.Route.Method(), info.Route.Path(), routerNameOf(info.Router))
 			continue
 		}
 
 		oar, isOA := info.Route.(OpenAPIRoute)
 		if !isOA {
-			e.logger.Debug("OpenAPI: Route %s %s does not implement OpenAPIRoute",
+			e.debugf("route %s %s does not implement OpenAPIRoute",
 				info.Route.Method(), info.Route.Path())
 			continue
 		}
@@ -248,11 +280,11 @@ func (e *OpenAPIExtension) collect(routes []rx.RouteInfo) {
 		// The whole RouteInfo is kept, not just the route: the router's
 		// BaseURL is part of the documented path (D48).
 		e.routes = append(e.routes, info)
-		e.logger.Debug("OpenAPI: Collected route %s %s from router %s (base=%q, opid=%s)",
+		e.debugf("collected route %s %s from router %s (base=%q, opid=%s)",
 			info.Route.Method(), info.Route.Path(), routerNameOf(info.Router),
 			info.BaseURL, oar.OperationID())
 	}
-	e.logger.Info("OpenAPI: Collected %d route(s) for the document", len(e.routes))
+	e.infof("collected %d route(s) for the document", len(e.routes))
 }
 
 var _ rx.RouteValidator = (*OpenAPIExtension)(nil)
@@ -272,12 +304,10 @@ func (e *OpenAPIExtension) generate() ([]byte, error) {
 	routes := make([]rx.RouteInfo, len(e.routes))
 	copy(routes, e.routes)
 
-	if e.logger != nil {
-		e.logger.Info("OpenAPI: Generating the document from %d collected route(s)", len(routes))
-		for i, info := range routes {
-			e.logger.Debug("OpenAPI: Processing route %d: %s %s (base=%q)",
-				i, info.Route.Method(), info.Route.Path(), info.BaseURL)
-		}
+	e.infof("generating the document from %d collected route(s)", len(routes))
+	for i, info := range routes {
+		e.debugf("processing route %d: %s %s (base=%q)",
+			i, info.Route.Method(), info.Route.Path(), info.BaseURL)
 	}
 
 	// Resolve security schemes from the container (soft dependency). Written
@@ -288,18 +318,18 @@ func (e *OpenAPIExtension) generate() ([]byte, error) {
 	gen := NewGenerator(e.cfg, e.securitySchemes)
 	doc, err := gen.Generate(routes)
 	if err != nil {
-		e.logger.Error("Failed to generate OpenAPI document: %v", err)
+		e.errorf("failed to generate the document: %v", err)
 		return nil, err
 	}
 
 	docBytes, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		e.logger.Error("Failed to marshal OpenAPI document: %v", err)
+		e.errorf("failed to marshal the document: %v", err)
 		return nil, err
 	}
 
 	// Log generated paths
-	e.logger.Info("OpenAPI: Generated %d paths", len(doc.Paths))
+	e.infof("generated %d path(s)", len(doc.Paths))
 	for path, pi := range doc.Paths {
 		methods := []string{}
 		if pi.Get != nil {
@@ -323,10 +353,10 @@ func (e *OpenAPIExtension) generate() ([]byte, error) {
 		if pi.Options != nil {
 			methods = append(methods, "OPTIONS")
 		}
-		e.logger.Debug("OpenAPI: Path %s methods: %v", path, methods)
+		e.debugf("path %s methods: %v", path, methods)
 	}
 
-	e.logger.Info("OpenAPI 3.1 document generated with %d operation(s)", len(doc.Paths))
+	e.infof("OpenAPI 3.1 document generated with %d path(s)", len(doc.Paths))
 	return docBytes, nil
 }
 
@@ -348,24 +378,18 @@ func (e *OpenAPIExtension) discoverSecuritySchemesLocked() {
 
 	var registry rx.SchemeRegistry
 	if err := e.container.Resolve(&registry); err != nil || registry == nil {
-		if e.logger != nil {
-			e.logger.Debug("OpenAPI: No security scheme registry available: %v", err)
-		}
+		e.debugf("no security scheme registry available: %v", err)
 		return
 	}
 
 	schemes := registry.Schemes()
 	if len(schemes) == 0 {
-		if e.logger != nil {
-			e.logger.Debug("OpenAPI: The security scheme registry is empty")
-		}
+		e.debugf("the security scheme registry is empty")
 		return
 	}
 
 	e.securitySchemes = schemes
-	if e.logger != nil {
-		e.logger.Info("OpenAPI: Using %d security scheme(s) from the container registry", len(schemes))
-	}
+	e.infof("using %d security scheme(s) from the container registry", len(schemes))
 }
 
 // OnStop is a no-op for the OpenAPI extension.
