@@ -3,7 +3,7 @@
 A comprehensive OpenAPI 3.1 specification generator extension for the Rex framework.
 
 [![Go Version](https://img.shields.io/badge/go-1.27+-blue.svg)](https://golang.org/dl/)
-[![Coverage](https://img.shields.io/badge/coverage-93.3%25-brightgreen.svg)](#)
+[![Coverage](https://img.shields.io/badge/coverage-94.9%25-brightgreen.svg)](#)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ## Overview
@@ -18,7 +18,10 @@ A comprehensive OpenAPI 3.1 specification generator extension for the Rex framew
 - **Security scheme documentation** (soft-dependency on `rextension-security`)
 - **Request/response examples** via `ResponseExamplesProvider` and `RequestBodyExamplesProvider`
 - **Response descriptions** via `ResponseDescriptionProvider`
-- **Lazy generation**: Document generated on first request and cached in memory
+- **Generated once at startup**, when the route table is frozen — a generation
+  failure is a startup error, not a 500 on the first request
+- **Router scoping**: which routers' routes appear in the document, and which
+  router serves it
 - **Configurable serve path** (default: `/openapi.json`)
 
 ## Installation
@@ -184,14 +187,43 @@ func (r *MyRoute) ResponseDescriptions() map[int]string {
 }
 ```
 
+## Routers and base paths
+
+A route's documented path is the router's `BaseURL` plus the route's own path.
+A route declared as `/schemas` on a router based at `/internal` is served at
+`/internal/schemas`, and that is what the document says — the router strips the
+prefix before matching, so the route itself declares the bare path.
+
+Which routers contribute routes is configuration, and the default is
+deliberately narrow: **the default router alone**. A document that omits a
+route can be widened; a document that published a private route has already
+published it.
+
+```go
+openapi.NewConfig(
+    openapi.WithIncludeRouters("*"),          // every router
+    openapi.WithExcludeRouters("internal"),   // except this one
+)
+```
+
+`ExcludeRouters` is applied after `IncludeRouters`, so it wins over `"*"`.
+
+Two routes that resolve to the same method and documented path are a **startup
+error**, naming both operations and both routers. They used to overwrite one
+another, so an operation simply vanished from the document.
+
 ## Configuration Reference
 
-| Field         | Type     | Default           | Description                                  |
-|---------------|----------|-------------------|----------------------------------------------|
-| `Title`       | `string` | `"API"`           | API title in the info section                |
-| `Version`     | `string` | `"1.0.0"`         | API version in the info section              |
-| `Description` | `string` | `""`              | API description in the info section          |
-| `ServePath`   | `string` | `"/openapi.json"` | Path to serve the OpenAPI JSON document      |
+| Field            | Type       | Default           | Description                                                  |
+|------------------|------------|-------------------|--------------------------------------------------------------|
+| `Title`          | `string`   | `"API"`           | API title in the info section                                |
+| `Version`        | `string`   | `"1.0.0"`         | API version in the info section                              |
+| `Description`    | `string`   | `""`              | API description in the info section                          |
+| `ServePath`      | `string`   | `"/openapi.json"` | Path to serve the OpenAPI JSON document                      |
+| `Tags`           | `[]Tag`    | `nil`             | Top-level tag descriptions                                   |
+| `IncludeRouters` | `[]string` | `nil`             | Routers whose routes appear; empty = default router, `"*"` = all |
+| `ExcludeRouters` | `[]string` | `nil`             | Routers to omit, applied after `IncludeRouters`               |
+| `ServeOnRouter`  | `string`   | `""`              | Router that serves the document; empty = default router      |
 
 ### Config Options
 
@@ -204,12 +236,16 @@ openapi.WithOpenAPI(openapi.NewConfig(
 ))
 ```
 
-| Option              | Description                              |
-|---------------------|------------------------------------------|
-| `WithTitle(s)`      | Sets the API title                       |
-| `WithVersion(s)`    | Sets the API version                     |
-| `WithDescription(s)`| Sets the API description                 |
-| `WithServePath(s)`  | Sets the path to serve the OpenAPI JSON  |
+| Option                    | Description                                          |
+|---------------------------|------------------------------------------------------|
+| `WithTitle(s)`            | Sets the API title                                   |
+| `WithVersion(s)`          | Sets the API version                                 |
+| `WithDescription(s)`      | Sets the API description                             |
+| `WithServePath(s)`        | Sets the path to serve the OpenAPI JSON              |
+| `WithTags(...)`           | Registers top-level tag descriptions                 |
+| `WithIncludeRouters(...)` | Routers whose routes appear in the document          |
+| `WithExcludeRouters(...)` | Routers to omit, applied after the include list      |
+| `WithServeOnRouter(s)`    | Router that serves the document                      |
 
 ## Best Practices
 

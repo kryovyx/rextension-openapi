@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	rx "github.com/kryovyx/rextension"
@@ -593,5 +594,191 @@ func TestSpecRoute_empty_path_falls_back(t *testing.T) {
 	}
 	if got := r.registered[0].route.Path(); got != "/openapi.json" {
 		t.Fatalf("spec path = %q, want the /openapi.json fallback", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The router's base path (D48)
+// ---------------------------------------------------------------------------
+
+// A router configured with a BaseURL serves its routes under that prefix, and
+// the routes themselves declare the bare path — the router strips the prefix
+// before matching. The document has to put it back.
+//
+// It did not. RouteInfo has carried BaseURL since D46 and collect() kept only
+// info.Route, so every path in the document was wrong by the prefix: an
+// internal router based at /internal documented /schemas, and every generated
+// client called a URL that 404s. The narrower default from D41 hid this rather
+// than fixing it — the moment a second router is included, or the default
+// router itself has a BaseURL, the whole document is wrong.
+func TestCollect_prefixes_the_routers_base_path(t *testing.T) {
+	routes := []rx.RouteInfo{
+		{
+			Route:  docRoute{http.MethodGet, "/users", "listUsers"},
+			Router: rx.DefaultRouterName,
+			// The default router can carry a base path too, which is why this
+			// is not only an internal-router problem.
+			BaseURL: "/api",
+		},
+		{
+			Route:   docRoute{http.MethodGet, "/schemas", "listSchemas"},
+			Router:  "internal",
+			BaseURL: "/internal",
+		},
+	}
+	_, spec := boot(t, openapi.NewConfig(openapi.WithIncludeRouters("*")), routes)
+
+	got := paths(t, serve(t, spec))
+	for _, want := range []string{"/api/users", "/internal/schemas"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("path %q missing from the document; got %v", want, keys(got))
+		}
+	}
+	for _, unwanted := range []string{"/users", "/schemas"} {
+		if _, ok := got[unwanted]; ok {
+			t.Errorf("path %q was documented without its router's base path", unwanted)
+		}
+	}
+}
+
+// Path parameters survive the prefix: the prefix is prepended before the
+// {param} rewrite, so a based route still declares its parameters.
+func TestCollect_base_path_keeps_path_parameters(t *testing.T) {
+	routes := []rx.RouteInfo{{
+		Route:   docRoute{http.MethodGet, "/connections/{connectionId}", "getConnection"},
+		Router:  "internal",
+		BaseURL: "/internal",
+	}}
+	_, spec := boot(t, openapi.NewConfig(openapi.WithIncludeRouters("internal")), routes)
+
+	got := paths(t, serve(t, spec))
+	item, ok := got["/internal/connections/{connectionId}"]
+	if !ok {
+		t.Fatalf("the based path is missing: %v", keys(got))
+	}
+	op := item.(map[string]any)["get"].(map[string]any)
+	params, _ := op["parameters"].([]any)
+	if len(params) != 1 {
+		t.Fatalf("expected 1 path parameter, got %v", params)
+	}
+	if name := params[0].(map[string]any)["name"]; name != "connectionId" {
+		t.Errorf("expected the connectionId parameter, got %v", name)
+	}
+}
+
+// Every shape of base path a router can hand over, including the ones the
+// framework normalises away — the generator does not get to assume it was
+// called by the framework.
+func TestCollect_base_path_normalisation(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+		path string
+		want string
+	}{
+		{"no base", "", "/users", "/users"},
+		{"root base", "/", "/users", "/users"},
+		{"plain base", "/api", "/users", "/api/users"},
+		{"trailing slash on the base", "/api/", "/users", "/api/users"},
+		{"no leading slash on the base", "api", "/users", "/api/users"},
+		{"no leading slash on the path", "/api", "users", "/api/users"},
+		{"nested base", "/api/v2", "/users", "/api/v2/users"},
+		{"root path under a base", "/api", "/", "/api"},
+		{"root path with no base", "", "/", "/"},
+		{"empty path under a base", "/api", "", "/api"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			routes := []rx.RouteInfo{{
+				Route:   docRoute{http.MethodGet, tc.path, "op"},
+				Router:  rx.DefaultRouterName,
+				BaseURL: tc.base,
+			}}
+			_, spec := boot(t, openapi.NewConfig(), routes)
+
+			got := paths(t, serve(t, spec))
+			if _, ok := got[tc.want]; !ok {
+				t.Fatalf("expected path %q, got %v", tc.want, keys(got))
+			}
+		})
+	}
+}
+
+// A nil route in the table is skipped rather than panicking. The framework
+// does not produce one; a caller building RouteInfo by hand can.
+func TestCollect_skips_a_nil_route(t *testing.T) {
+	routes := []rx.RouteInfo{
+		{Route: nil, Router: rx.DefaultRouterName},
+		{Route: docRoute{http.MethodGet, "/ok", "ok"}, Router: rx.DefaultRouterName},
+	}
+	_, spec := boot(t, openapi.NewConfig(), routes)
+
+	if got := paths(t, serve(t, spec)); len(got) != 1 {
+		t.Fatalf("expected 1 path, got %v", keys(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Colliding operations (D48)
+// ---------------------------------------------------------------------------
+
+// Two routes resolving to the same method and documented path used to be a
+// silent overwrite: setOperation takes the last writer, so one operation
+// vanished from the document with no diagnostic anywhere. It is a startup
+// error now, and the message names both sides.
+func TestValidateRoutes_rejects_colliding_documented_paths(t *testing.T) {
+	routes := []rx.RouteInfo{
+		{Route: docRoute{http.MethodGet, "/users", "publicListUsers"}, Router: rx.DefaultRouterName},
+		{Route: docRoute{http.MethodGet, "/users", "adminListUsers"}, Router: "admin"},
+	}
+	ext := openapi.NewOpenAPIExtension(openapi.NewConfig(
+		openapi.WithIncludeRouters("*"),
+	))
+	r := newMockRex()
+	if err := ext.OnInitialize(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if err := ext.OnStart(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	err := ext.(rx.RouteValidator).ValidateRoutes(routes)
+	if err == nil {
+		t.Fatal("expected a startup error for two routes on the same documented path")
+	}
+	for _, want := range []string{"GET /users", "publicListUsers", "adminListUsers"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// The same method and path on two routers do **not** collide once their base
+// paths differ — which is the ordinary shape of a public and an internal API
+// and must keep working.
+func TestValidateRoutes_allows_the_same_path_under_different_bases(t *testing.T) {
+	routes := []rx.RouteInfo{
+		{Route: docRoute{http.MethodGet, "/users", "publicListUsers"},
+			Router: rx.DefaultRouterName, BaseURL: "/api"},
+		{Route: docRoute{http.MethodGet, "/users", "adminListUsers"},
+			Router: "admin", BaseURL: "/admin"},
+	}
+	_, spec := boot(t, openapi.NewConfig(openapi.WithIncludeRouters("*")), routes)
+
+	got := paths(t, serve(t, spec))
+	if len(got) != 2 {
+		t.Fatalf("expected both paths, got %v", keys(got))
+	}
+}
+
+// Different methods on one path are not a collision.
+func TestValidateRoutes_allows_different_methods_on_one_path(t *testing.T) {
+	routes := []rx.RouteInfo{
+		{Route: docRoute{http.MethodGet, "/users", "listUsers"}, Router: rx.DefaultRouterName},
+		{Route: docRoute{http.MethodPost, "/users", "createUser"}, Router: rx.DefaultRouterName},
+	}
+	_, spec := boot(t, openapi.NewConfig(), routes)
+
+	if got := paths(t, serve(t, spec)); len(got) != 1 {
+		t.Fatalf("expected one path carrying both operations, got %v", keys(got))
 	}
 }

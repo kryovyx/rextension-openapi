@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 
+	rx "github.com/kryovyx/rextension"
 	rxevent "github.com/kryovyx/rextension/event"
 )
 
@@ -22,6 +23,37 @@ const wildcardParamDescription = "Matches the remainder of the path, including a
 	"OpenAPI has no notation for a multi-segment path parameter, so tooling may " +
 	"percent-encode \"/\" as %2F when constructing requests from this document; " +
 	"the server accepts the unencoded form."
+
+// joinBasePath prefixes a router's base path onto a route's own path (D48).
+//
+// A route registered on a router configured with BaseURL "/internal" is served
+// at "/internal/schemas", not at "/schemas" — the router strips the prefix
+// before matching, so the route declares the bare path. The document has to
+// put it back, or every path in it is wrong by that prefix and every generated
+// client calls a URL that 404s.
+//
+// The framework hands over an already normalised base — no trailing slash, ""
+// for the root (rex's normalizeBaseURL) — but this does not rely on that: a
+// generator called directly may be handed anything. It guarantees a leading
+// slash and exactly one separator at the seam.
+func joinBasePath(base, path string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base != "" && !strings.HasPrefix(base, "/") {
+		base = "/" + base
+	}
+
+	path = strings.TrimSpace(path)
+	if path == "" || path == "/" {
+		if base == "" {
+			return "/"
+		}
+		return base
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return base + path
+}
 
 // extractPathParams parses a Rex route path and returns the OpenAPI path plus a
 // Parameter for every variable segment.
@@ -85,7 +117,18 @@ func NewGenerator(cfg Config, securitySchemes []SecuritySchemeAccessor) *Generat
 
 // Generate builds the full OpenAPI 3.1 document from the given routes.
 // Only routes implementing OpenAPIRoute are included.
-func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
+//
+// It takes RouteInfo rather than bare routes because a route's documented path
+// is not its own path: the router it sits on contributes a base prefix, and
+// only RouteInfo carries it (D48). The signature changed for that reason — a
+// caller passing []event.Route had no way to supply the prefix, so the
+// omission was not a bug that could be fixed in place.
+//
+// Two routes resolving to the same method and documented path are a **startup
+// error** rather than a silent overwrite. setOperation takes the last writer,
+// so the losing operation used to vanish from the document with no diagnostic
+// anywhere — and prefixing makes the collision expressible across routers.
+func (g *Generator) Generate(routes []rx.RouteInfo) (*Document, error) {
 	doc := &Document{
 		OpenAPI: "3.1.0",
 		Info: Info{
@@ -139,8 +182,17 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 		doc.Components.SecuritySchemes[ss.Name()] = sso
 	}
 
+	// claimed remembers which route took each method+path, so a collision can
+	// name both sides instead of silently dropping one of them.
+	type origin struct{ router, operationID string }
+	claimed := make(map[string]origin, len(routes))
+
 	// Process each route.
-	for _, rt := range routes {
+	for _, info := range routes {
+		rt := info.Route
+		if rt == nil {
+			continue
+		}
 		oar, ok := rt.(OpenAPIRoute)
 		if !ok {
 			continue // Not an OpenAPI route — skip.
@@ -160,8 +212,9 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 		// Enrich with security requirements.
 		g.enrichWithSecurity(rt, op)
 
-		// Extract path parameters and rewrite path to OpenAPI {param} syntax.
-		openAPIPath, pathParams := extractPathParams(rt.Path())
+		// Prefix the router's base path, then rewrite to OpenAPI {param}
+		// syntax and collect the path parameters.
+		openAPIPath, pathParams := extractPathParams(joinBasePath(info.BaseURL, rt.Path()))
 		if len(pathParams) > 0 {
 			op.Parameters = append(op.Parameters, pathParams...)
 		}
@@ -181,10 +234,20 @@ func (g *Generator) Generate(routes []rxevent.Route) (*Document, error) {
 		g.addProblemResponses(op)
 
 		// Add operation to path item.
+		method := strings.ToUpper(rt.Method())
+		key := method + " " + openAPIPath
+		if prev, taken := claimed[key]; taken {
+			return nil, fmt.Errorf(
+				"duplicate operation %s: router %q operation %q and router %q operation %q resolve to the same documented path",
+				key, prev.router, prev.operationID,
+				routerNameOf(info.Router), oar.OperationID())
+		}
+		claimed[key] = origin{router: routerNameOf(info.Router), operationID: oar.OperationID()}
+
 		if doc.Paths[openAPIPath] == nil {
 			doc.Paths[openAPIPath] = &PathItem{}
 		}
-		doc.Paths[openAPIPath].setOperation(strings.ToUpper(rt.Method()), op)
+		doc.Paths[openAPIPath].setOperation(method, op)
 	}
 
 	// Copy component schemas from the generator.

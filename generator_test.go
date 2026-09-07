@@ -4,9 +4,21 @@ import (
 	"encoding/json"
 	"testing"
 
+	rx "github.com/kryovyx/rextension"
 	openapi "github.com/kryovyx/rextension-openapi"
-	rxevent "github.com/kryovyx/rextension/event"
+	rxroute "github.com/kryovyx/rextension/route"
 )
+
+// infos wraps bare routes as RouteInfo on the default router with no base
+// path — the shape most of these tests assert about. The base-path cases
+// below build RouteInfo directly.
+func infos(routes ...rxroute.Route) []rx.RouteInfo {
+	out := make([]rx.RouteInfo, 0, len(routes))
+	for _, rt := range routes {
+		out = append(out, rx.RouteInfo{Route: rt, Router: rx.DefaultRouterName})
+	}
+	return out
+}
 
 // ---- mock types ----
 
@@ -19,6 +31,8 @@ type mockRoute struct {
 	description string
 	tags        []string
 }
+
+func (r *mockRoute) Handler() rxroute.HandlerFunc { return func(rxroute.Context) {} }
 
 func (r *mockRoute) Method() string      { return r.method }
 func (r *mockRoute) Path() string        { return r.path }
@@ -72,8 +86,9 @@ type plainRoute struct {
 	path   string
 }
 
-func (r *plainRoute) Method() string { return r.method }
-func (r *plainRoute) Path() string   { return r.path }
+func (r *plainRoute) Method() string               { return r.method }
+func (r *plainRoute) Path() string                 { return r.path }
+func (r *plainRoute) Handler() rxroute.HandlerFunc { return func(rxroute.Context) {} }
 
 // BodySchema mocks for validation enrichment.
 //
@@ -157,7 +172,7 @@ func TestGenerator_Generate_BasicRoute(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{
 			method:      "GET",
 			path:        "/users",
@@ -168,7 +183,7 @@ func TestGenerator_Generate_BasicRoute(t *testing.T) {
 		},
 	}
 
-	doc, err := gen.Generate(routes)
+	doc, err := gen.Generate(infos(routes...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -202,11 +217,11 @@ func TestGenerator_Generate_SkipsNonOpenAPIRoute(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&plainRoute{method: "GET", path: "/health"},
 	}
 
-	doc, err := gen.Generate(routes)
+	doc, err := gen.Generate(infos(routes...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -220,11 +235,11 @@ func TestGenerator_Generate_DefaultResponse(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "GET", path: "/test", operationID: "test"},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	op := doc.Paths["/test"].Get
 	if _, ok := op.Responses["200"]; !ok {
@@ -240,12 +255,12 @@ func TestGenerator_Generate_AllHTTPMethods(t *testing.T) {
 	gen := openapi.NewGenerator(cfg, nil)
 
 	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-	routes := make([]rxevent.Route, len(methods))
+	routes := make([]rxroute.Route, len(methods))
 	for i, m := range methods {
 		routes[i] = &mockRoute{method: m, path: "/test", operationID: m + "Op"}
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	pi := doc.Paths["/test"]
 	if pi.Get == nil {
@@ -275,12 +290,12 @@ func TestGenerator_Generate_MultiplePaths(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "GET", path: "/a", operationID: "getA"},
 		&mockRoute{method: "POST", path: "/b", operationID: "postB"},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	if len(doc.Paths) != 2 {
 		t.Errorf("expected 2 paths, got %d", len(doc.Paths))
@@ -407,14 +422,14 @@ func TestGenerator_Generate_RouteWithSecurity(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, schemes)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockSecuredRoute{
 			method: "GET", path: "/secure", operationID: "secureOp",
 			schemes: []string{"bearer"},
 		},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	op := doc.Paths["/secure"].Get
 	if len(op.Security) != 1 {
@@ -429,14 +444,14 @@ func TestGenerator_Generate_RouteWithEmptySchemes(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockSecuredRoute{
 			method: "GET", path: "/public", operationID: "publicOp",
 			schemes: nil,
 		},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	op := doc.Paths["/public"].Get
 	if len(op.Security) != 0 {
@@ -459,7 +474,7 @@ func TestGenerator_Generate_WithValidation(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockValidatedRoute{
 			method: "POST", path: "/users", operationID: "createUser",
 			reqBody: &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{ReqBody{}}},
@@ -469,7 +484,7 @@ func TestGenerator_Generate_WithValidation(t *testing.T) {
 		},
 	}
 
-	doc, err := gen.Generate(routes)
+	doc, err := gen.Generate(infos(routes...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -494,7 +509,7 @@ func TestGenerator_Generate_NilRequestBody(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockValidatedRoute{
 			method: "GET", path: "/items", operationID: "listItems",
 			reqBody:   nil,
@@ -502,7 +517,7 @@ func TestGenerator_Generate_NilRequestBody(t *testing.T) {
 		},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	op := doc.Paths["/items"].Get
 	if op.RequestBody != nil {
@@ -516,7 +531,7 @@ func TestGenerator_Generate_WithExamples(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRouteWithExamples{
 			method:      "POST",
 			path:        "/pay",
@@ -539,7 +554,7 @@ func TestGenerator_Generate_WithExamples(t *testing.T) {
 		},
 	}
 
-	doc, err := gen.Generate(routes)
+	doc, err := gen.Generate(infos(routes...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -581,11 +596,11 @@ func TestGenerator_Generate_EmptyComponents(t *testing.T) {
 	gen := openapi.NewGenerator(cfg, nil)
 
 	// Route with no validation, no security - components should be nil
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "GET", path: "/test", operationID: "test"},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	if doc.Components != nil {
 		t.Error("expected nil components when no schemas or security schemes")
@@ -596,14 +611,14 @@ func TestGenerator_Generate_OnlySchemasNoSecurity(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockValidatedRoute{
 			method: "POST", path: "/users", operationID: "createUser",
 			reqBody: &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{ReqBody{}}},
 		},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	if doc.Components == nil {
 		t.Fatal("expected components")
@@ -623,11 +638,11 @@ func TestGenerator_Generate_OnlySecurityNoSchemas(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, schemes)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "GET", path: "/test", operationID: "test"},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	if doc.Components == nil {
 		t.Fatal("expected components")
@@ -660,11 +675,11 @@ func TestGenerator_Generate_LowercaseMethod(t *testing.T) {
 	gen := openapi.NewGenerator(cfg, nil)
 
 	// The generator calls strings.ToUpper on the method, so lowercase input should work
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "get", path: "/test", operationID: "test"},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	pi := doc.Paths["/test"]
 	if pi.Get == nil {
@@ -680,14 +695,14 @@ func TestGenerator_Generate_MultipleSecuritySchemes(t *testing.T) {
 	}
 	gen := openapi.NewGenerator(cfg, schemes)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockSecuredRoute{
 			method: "GET", path: "/secure", operationID: "secureOp",
 			schemes: []string{"bearer", "basic"},
 		},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	op := doc.Paths["/secure"].Get
 	if len(op.Security) != 2 {
@@ -757,14 +772,14 @@ func TestGenerator_Generate_WithResponseEmptyBodySchema(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockValidatedRoute{
 			method: "POST", path: "/items", operationID: "createItem",
 			reqBody: &testBodySchema{kind: openapi.SchemaScalar, types: []interface{}{}}, // empty types
 		},
 	}
 
-	doc, _ := gen.Generate(routes)
+	doc, _ := gen.Generate(infos(routes...))
 
 	op := doc.Paths["/items"].Post
 	// Empty types should produce an object schema for request body.
@@ -786,11 +801,11 @@ func TestGenerator_PathParams_SingleParam(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "GET", path: "/users/{id}", operationID: "getUser"},
 	}
 
-	doc, err := gen.Generate(routes)
+	doc, err := gen.Generate(infos(routes...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -826,11 +841,11 @@ func TestGenerator_PathParams_MultipleParams(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "GET", path: "/users/{userID}/posts/{postID}", operationID: "getPost"},
 	}
 
-	doc, err := gen.Generate(routes)
+	doc, err := gen.Generate(infos(routes...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -860,11 +875,11 @@ func TestGenerator_PathParams_NoParams(t *testing.T) {
 	cfg := openapi.Config{Title: "T", Version: "1"}
 	gen := openapi.NewGenerator(cfg, nil)
 
-	routes := []rxevent.Route{
+	routes := []rxroute.Route{
 		&mockRoute{method: "GET", path: "/health", operationID: "health"},
 	}
 
-	doc, err := gen.Generate(routes)
+	doc, err := gen.Generate(infos(routes...))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1024,10 +1039,10 @@ func expectUnion(t *testing.T, key string, want int) func(*testing.T, map[string
 	}
 }
 
-func generateDoc(t *testing.T, rt rxevent.Route) map[string]any {
+func generateDoc(t *testing.T, rt rxroute.Route) map[string]any {
 	t.Helper()
 	gen := openapi.NewGenerator(*openapi.NewDefaultConfig(), nil)
-	generated, err := gen.Generate([]rxevent.Route{rt})
+	generated, err := gen.Generate(infos(rt))
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

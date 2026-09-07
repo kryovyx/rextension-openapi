@@ -21,7 +21,6 @@ import (
 	"sync"
 
 	rx "github.com/kryovyx/rextension"
-	rxevent "github.com/kryovyx/rextension/event"
 )
 
 // OpenAPIExtension implements the Rex extension contract for OpenAPI generation.
@@ -29,8 +28,11 @@ type OpenAPIExtension struct {
 	cfg    Config
 	logger rx.Logger
 
-	mu     sync.Mutex
-	routes []rxevent.Route
+	mu sync.Mutex
+	// routes are the collected routes together with the router each belongs
+	// to. The router name is kept for diagnostics, and its BaseURL because it
+	// is part of the documented path (D48).
+	routes []rx.RouteInfo
 
 	// securitySchemes are resolved once, when the document is generated.
 	//
@@ -84,6 +86,18 @@ func NewOpenAPIExtension(cfg *Config) rx.Extension {
 // WithOpenAPI is a helper Option to attach the OpenAPI extension to Rex.
 func WithOpenAPI(cfg *Config) rx.Option {
 	return rx.WithExtension(NewOpenAPIExtension(cfg))
+}
+
+// routerNameOf resolves an empty router name to the default router.
+//
+// The framework leaves the name empty for the default router in some paths, so
+// every comparison and every diagnostic has to normalise it or the same router
+// appears under two names.
+func routerNameOf(name string) string {
+	if name == "" {
+		return rx.DefaultRouterName
+	}
+	return name
 }
 
 // SetSecuritySchemes is called by other extensions (like the security extension)
@@ -215,9 +229,12 @@ func (e *OpenAPIExtension) collect(routes []rx.RouteInfo) {
 
 	e.routes = e.routes[:0]
 	for _, info := range routes {
+		if info.Route == nil {
+			continue
+		}
 		if !e.includesRouter(info.Router) {
 			e.logger.Debug("OpenAPI: Skipping route %s %s on router %s, which is not included",
-				info.Route.Method(), info.Route.Path(), info.Router)
+				info.Route.Method(), info.Route.Path(), routerNameOf(info.Router))
 			continue
 		}
 
@@ -228,9 +245,12 @@ func (e *OpenAPIExtension) collect(routes []rx.RouteInfo) {
 			continue
 		}
 
-		e.routes = append(e.routes, info.Route)
-		e.logger.Debug("OpenAPI: Collected route %s %s from router %s (opid=%s)",
-			info.Route.Method(), info.Route.Path(), info.Router, oar.OperationID())
+		// The whole RouteInfo is kept, not just the route: the router's
+		// BaseURL is part of the documented path (D48).
+		e.routes = append(e.routes, info)
+		e.logger.Debug("OpenAPI: Collected route %s %s from router %s (base=%q, opid=%s)",
+			info.Route.Method(), info.Route.Path(), routerNameOf(info.Router),
+			info.BaseURL, oar.OperationID())
 	}
 	e.logger.Info("OpenAPI: Collected %d route(s) for the document", len(e.routes))
 }
@@ -249,13 +269,14 @@ func (e *OpenAPIExtension) generate() ([]byte, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	routes := make([]rxevent.Route, len(e.routes))
+	routes := make([]rx.RouteInfo, len(e.routes))
 	copy(routes, e.routes)
 
 	if e.logger != nil {
 		e.logger.Info("OpenAPI: Generating the document from %d collected route(s)", len(routes))
-		for i, rt := range routes {
-			e.logger.Debug("OpenAPI: Processing route %d: %s %s", i, rt.Method(), rt.Path())
+		for i, info := range routes {
+			e.logger.Debug("OpenAPI: Processing route %d: %s %s (base=%q)",
+				i, info.Route.Method(), info.Route.Path(), info.BaseURL)
 		}
 	}
 
